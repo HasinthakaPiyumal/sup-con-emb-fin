@@ -136,14 +136,36 @@ def prepare_fold_data(texts, labels, train_idx, test_idx, max_pairs_per_class, b
     
     return train_loader, X_train, y_train, X_test, y_test
 
+# def train_model(model_name, max_seq_length, train_loader, epochs, warmup_steps, lr):
+#     # Load model (remote code needed for Nomic)
+#     model = SentenceTransformer(model_name, trust_remote_code=True)
+#     model.max_seq_length = max_seq_length
+
+#     train_loss = losses.MultipleNegativesRankingLoss(model)
+
+#     # Train
+#     model.fit(
+#         train_objectives=[(train_loader, train_loss)],
+#         epochs=epochs,
+#         warmup_steps=warmup_steps,
+#         optimizer_params={"lr": lr},
+#         show_progress_bar=True,
+#         use_amp=True,
+#     )
+#     return model
+
 def train_model(model_name, max_seq_length, train_loader, epochs, warmup_steps, lr):
-    # Load model (remote code needed for Nomic)
-    model = SentenceTransformer(model_name, trust_remote_code=True)
-    model.max_seq_length = max_seq_length
+    # Build SentenceTransformer from HF backbone
+    word_emb = models.Transformer(model_name, max_seq_length=max_seq_length)
+    pooling = models.Pooling(
+        word_emb.get_word_embedding_dimension(),
+        pooling_mode_mean_tokens=True
+    )
+
+    model = SentenceTransformer(modules=[word_emb, pooling])
 
     train_loss = losses.MultipleNegativesRankingLoss(model)
 
-    # Train
     model.fit(
         train_objectives=[(train_loader, train_loss)],
         epochs=epochs,
@@ -178,7 +200,6 @@ def save_fold_embeddings(fold, X_test, y_test, y_pred, test_emb):
     emb_np = test_emb.detach().cpu().numpy()
     df_meta = pd.DataFrame({
         "fold": fold,
-        "text": X_test,
         "label": y_test,
         "pred": y_pred
     })
@@ -333,7 +354,7 @@ def main():
         max_pairs_per_class=400,
         max_seq_length=768,
         seed=42,
-        model_name='nomic-ai/nomic-embed-text-v1'
+        model_name='microsoft/codebert-base'
     )
 
 if __name__ == "__main__":
