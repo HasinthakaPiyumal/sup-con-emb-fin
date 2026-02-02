@@ -1,9 +1,9 @@
 --extra-index-url https://download.pytorch.org/whl/cu121
 
 # Core
-torch==2.2.2+cu121
-torchvision==0.17.2+cu121
-torchaudio==2.2.2+cu121
+torch
+torchvision
+torchaudio
 
 # ML / NLP
 numpy
@@ -12,7 +12,7 @@ scikit-learn
 sentence-transformers
 einops
 datasets
-accelerate>=1.1.0
+accelerate
 
 # Logging
 wandb
