@@ -11,6 +11,8 @@ pandas
 scikit-learn
 sentence-transformers
 einops
+datasets
+accelerate>=1.1.0
 
 # Logging
 wandb
