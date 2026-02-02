@@ -68,7 +68,6 @@ def build_positive_pairs(texts, labels, max_pairs_per_class=None):
             pairs = random.sample(pairs, max_pairs_per_class)
 
         for a, b in pairs:
-            # Note: InputExample expects strings
             examples.append(InputExample(texts=[str(texts[a]), str(texts[b])]))
 
     random.shuffle(examples)
