@@ -74,6 +74,37 @@ def build_positive_pairs(texts, labels, max_pairs_per_class=None):
     return examples
 
 # =========================
+# Build Triplet training examples
+# =========================
+def build_triplets(texts, labels, max_triplets_per_class=None):
+    label_to_idxs = {}
+    for i, y in enumerate(labels):
+        label_to_idxs.setdefault(y, []).append(i)
+
+    examples = []
+    for y, idxs in label_to_idxs.items():
+        if len(idxs) < 2:
+            continue
+
+        triplets = []
+        for i in range(len(idxs)):
+            for j in range(len(idxs)):
+                if i != j:
+                    triplets.append((idxs[i], idxs[j]))
+
+        if max_triplets_per_class is not None and len(triplets) > max_triplets_per_class:
+            triplets = random.sample(triplets, max_triplets_per_class)
+
+        for a, p in triplets:
+            # Select a random negative example
+            neg_idxs = [idx for label, idx_list in label_to_idxs.items() if label != y for idx in idx_list]
+            n = random.choice(neg_idxs)
+            examples.append(InputExample(texts=[str(texts[a]), str(texts[p]), str(texts[n])]))
+
+    random.shuffle(examples)
+    return examples
+
+# =========================
 # Centroid classifier in embedding space
 # =========================
 def build_centroids(embeddings, labels):
@@ -124,6 +155,10 @@ def prepare_fold_data(texts, labels, train_idx, test_idx, max_pairs_per_class, b
         X_train, y_train, max_pairs_per_class=max_pairs_per_class
     )
 
+    # train_examples = build_triplets(
+    #     X_train, y_train, max_triplets_per_class=max_pairs_per_class
+    # )
+
     if len(train_examples) < 4:
         return None, None, None, None
 
@@ -136,36 +171,16 @@ def prepare_fold_data(texts, labels, train_idx, test_idx, max_pairs_per_class, b
     
     return train_loader, X_train, y_train, X_test, y_test
 
-# def train_model(model_name, max_seq_length, train_loader, epochs, warmup_steps, lr):
-#     # Load model (remote code needed for Nomic)
-#     model = SentenceTransformer(model_name, trust_remote_code=True)
-#     model.max_seq_length = max_seq_length
-
-#     train_loss = losses.MultipleNegativesRankingLoss(model)
-
-#     # Train
-#     model.fit(
-#         train_objectives=[(train_loader, train_loss)],
-#         epochs=epochs,
-#         warmup_steps=warmup_steps,
-#         optimizer_params={"lr": lr},
-#         show_progress_bar=True,
-#         use_amp=True,
-#     )
-#     return model
-
 def train_model(model_name, max_seq_length, train_loader, epochs, warmup_steps, lr):
-    # Build SentenceTransformer from HF backbone
-    word_emb = models.Transformer(model_name, max_seq_length=max_seq_length)
-    pooling = models.Pooling(
-        word_emb.get_word_embedding_dimension(),
-        pooling_mode_mean_tokens=True
-    )
-
-    model = SentenceTransformer(modules=[word_emb, pooling])
+    # Load model (remote code needed for Nomic)
+    model = SentenceTransformer(model_name, trust_remote_code=True)
+    model.max_seq_length = max_seq_length
 
     train_loss = losses.MultipleNegativesRankingLoss(model)
+    # train_loss = losses.TripletLoss(model=model, distance_metric=losses.TripletDistanceMetric.COSINE)
 
+
+    # Train
     model.fit(
         train_objectives=[(train_loader, train_loss)],
         epochs=epochs,
@@ -175,6 +190,7 @@ def train_model(model_name, max_seq_length, train_loader, epochs, warmup_steps, 
         use_amp=True,
     )
     return model
+
 
 def evaluate_fold(model, X_train, y_train, X_test, y_test):
     # Encode embeddings
@@ -329,7 +345,7 @@ def run_5fold_cv(
     log_results(fold_acc, fold_f1, all_true, all_pred, class_names)
 
 def main():
-    dataset_path = './data/labeled_code_data.csv'
+    dataset_path = './data/labeled_verified_data.csv'
     
     try:
         dataset, le = load_and_preprocess_data(dataset_path)
@@ -337,7 +353,7 @@ def main():
         print(f"Error: {e}")
         return
 
-    texts = dataset["code"]
+    texts = dataset["code_summary"]
     labels = dataset["label_enc"]
     class_names = list(le.classes_)
     
@@ -348,13 +364,13 @@ def main():
         labels=labels,
         class_names=class_names,
         epochs=3,
-        batch_size=16,
+        batch_size=32,
         lr=2e-5,
         warmup_steps=10,
-        max_pairs_per_class=400,
+        max_pairs_per_class=1000,
         max_seq_length=768,
         seed=42,
-        model_name='microsoft/codebert-base'
+        model_name='nomic-ai/nomic-embed-code'
     )
 
 if __name__ == "__main__":
