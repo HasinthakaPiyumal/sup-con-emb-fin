@@ -13,6 +13,8 @@ sentence-transformers
 einops
 datasets
 accelerate
+peft
+bitsandbytes
 
 # Logging
 wandb

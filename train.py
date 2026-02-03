@@ -1,5 +1,6 @@
 import os
 import random
+import gc
 import numpy as np
 import pandas as pd
 import torch
@@ -24,7 +25,7 @@ def set_seed(seed=42):
 # =========================
 # Load dataset
 # =========================
-def load_and_preprocess_data(filepath, min_samples_per_label=20):
+def load_and_preprocess_data(filepath, min_samples_per_label=50):
     if not os.path.exists(filepath):
         # Fallback to local file if absolute path doesn't exist
         local_path = os.path.basename(filepath)
@@ -172,23 +173,98 @@ def prepare_fold_data(texts, labels, train_idx, test_idx, max_pairs_per_class, b
     return train_loader, X_train, y_train, X_test, y_test
 
 def train_model(model_name, max_seq_length, train_loader, epochs, warmup_steps, lr):
-    # Load model (remote code needed for Nomic)
-    model = SentenceTransformer(model_name, trust_remote_code=True)
-    model.max_seq_length = max_seq_length
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is required but not available.")
+
+    def log_cuda_memory():
+        try:
+            free_bytes, total_bytes = torch.cuda.mem_get_info()
+            free_gb = free_bytes / (1024 ** 3)
+            total_gb = total_bytes / (1024 ** 3)
+            print(f"CUDA memory free/total: {free_gb:.2f} / {total_gb:.2f} GiB")
+        except Exception:
+            pass
+
+    def enable_gradient_checkpointing(st_model):
+        auto_model = None
+        if hasattr(st_model, "_first_module"):
+            first_module = st_model._first_module()
+            auto_model = getattr(first_module, "auto_model", None)
+        if auto_model is None:
+            auto_model = getattr(st_model, "auto_model", None)
+
+        if auto_model is not None and hasattr(auto_model, "gradient_checkpointing_enable"):
+            auto_model.gradient_checkpointing_enable()
+            if hasattr(auto_model, "config") and hasattr(auto_model.config, "use_cache"):
+                auto_model.config.use_cache = False
+
+    def build_model(device):
+        model_kwargs = {}
+        if device == "cuda":
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            model_kwargs["torch_dtype"] = torch.float16
+            model_kwargs["attn_implementation"] = "sdpa"
+
+        st_model = SentenceTransformer(
+            model_name,
+            trust_remote_code=True,
+            device=device,
+            model_kwargs=model_kwargs if model_kwargs else None,
+        )
+        st_model.max_seq_length = max_seq_length
+        enable_gradient_checkpointing(st_model)
+        return st_model
+
+    device = "cuda"
+    log_cuda_memory()
+
+    model = build_model(device)
+
+    # Mixed precision on GPU (avoid GradScaler with fp16 weights)
+    use_amp = device == "cuda" and False
+
+    # Use 8-bit optimizer states to reduce GPU memory usage (full-parameter fine-tuning)
+    optimizer_class = torch.optim.AdamW
+    optimizer_params = {"lr": lr}
+    if device == "cuda":
+        try:
+            import bitsandbytes as bnb
+
+            if hasattr(bnb.optim, "PagedAdamW8bit"):
+                optimizer_class = bnb.optim.PagedAdamW8bit
+                print("Using bitsandbytes PagedAdamW8bit optimizer for reduced memory.")
+            else:
+                optimizer_class = bnb.optim.AdamW8bit
+                print("Using bitsandbytes AdamW8bit optimizer for reduced memory.")
+        except Exception as exc:
+            print(f"bitsandbytes unavailable or failed to load ({exc}); falling back to AdamW.")
 
     train_loss = losses.MultipleNegativesRankingLoss(model)
     # train_loss = losses.TripletLoss(model=model, distance_metric=losses.TripletDistanceMetric.COSINE)
 
+    if device == "cuda":
+        torch.cuda.empty_cache()
 
     # Train
-    model.fit(
-        train_objectives=[(train_loader, train_loss)],
-        epochs=epochs,
-        warmup_steps=warmup_steps,
-        optimizer_params={"lr": lr},
-        show_progress_bar=True,
-        use_amp=True,
-    )
+    def run_fit():
+        model.fit(
+            train_objectives=[(train_loader, train_loss)],
+            epochs=epochs,
+            warmup_steps=warmup_steps,
+            optimizer_class=optimizer_class,
+            optimizer_params=optimizer_params,
+            show_progress_bar=True,
+            use_amp=use_amp,
+        )
+
+    try:
+        run_fit()
+    except RuntimeError as exc:
+        if "out of memory" in str(exc).lower():
+            print("CUDA out of memory. Aborting (CPU fallback disabled).")
+        raise
+
     return model
 
 
@@ -205,6 +281,11 @@ def evaluate_fold(model, X_train, y_train, X_test, y_test):
 
     centroids = build_centroids(train_emb, y_train)
     y_pred = predict_centroid(test_emb, centroids)
+
+    if isinstance(test_emb, torch.Tensor) and test_emb.is_cuda:
+        test_emb = test_emb.detach().cpu()
+    del train_emb
+    del centroids
     
     acc = accuracy_score(y_test, y_pred)
     f1 = f1_score(y_test, y_pred, average="macro")
@@ -250,6 +331,53 @@ def log_results(fold_acc, fold_f1, all_true, all_pred, class_names):
         })
     
     wandb.finish()
+
+def log_vram(stage):
+    if not torch.cuda.is_available():
+        print(f"[{stage}] CUDA not available.")
+        return
+    try:
+        free_bytes, total_bytes = torch.cuda.mem_get_info()
+        free_gb = free_bytes / (1024 ** 3)
+        total_gb = total_bytes / (1024 ** 3)
+        allocated_gb = torch.cuda.memory_allocated() / (1024 ** 3)
+        reserved_gb = torch.cuda.memory_reserved() / (1024 ** 3)
+        print(
+            f"[{stage}] VRAM free/total: {free_gb:.2f}/{total_gb:.2f} GiB | "
+            f"allocated: {allocated_gb:.2f} GiB | reserved: {reserved_gb:.2f} GiB"
+        )
+    except Exception as exc:
+        print(f"[{stage}] Failed to read VRAM stats: {exc}")
+
+def cleanup_cuda(stage, *objs, hard_reset=False):
+    for obj in objs:
+        try:
+            if hasattr(obj, "to"):
+                obj.to("cpu")
+        except Exception:
+            pass
+    gc.collect()
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.synchronize()
+        except Exception:
+            pass
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        try:
+            torch.cuda.reset_peak_memory_stats()
+        except Exception:
+            pass
+        try:
+            torch.cuda.reset_accumulated_memory_stats()
+        except Exception:
+            pass
+        if hard_reset:
+            try:
+                torch.cuda.cudart().cudaDeviceReset()
+            except Exception:
+                pass
+    log_vram(stage)
 
 # =========================
 # Main: 5-fold CV fine-tuning and evaluation
@@ -304,6 +432,8 @@ def run_5fold_cv(
         print("\n" + "=" * 80)
         print(f"FOLD {fold}/{num_folds}")
         print("=" * 80)
+
+        log_vram(f"fold {fold} start")
         
         train_loader, X_train, y_train, X_test, y_test = prepare_fold_data(
             texts, labels, train_idx, test_idx, max_pairs_per_class, batch_size
@@ -313,7 +443,14 @@ def run_5fold_cv(
             print("Not enough same-class pairs to train. Skipping fold.")
             continue
 
-        model = train_model(model_name, max_seq_length, train_loader, epochs, warmup_steps, lr)
+        model = train_model(
+            model_name,
+            max_seq_length,
+            train_loader,
+            epochs,
+            warmup_steps,
+            lr,
+        )
         
         acc, f1, y_pred, test_emb = evaluate_fold(model, X_train, y_train, X_test, y_test)
 
@@ -332,8 +469,10 @@ def run_5fold_cv(
         all_test_rows.append(df_fold)
 
         # cleanup
+        cleanup_cuda(f"fold {fold} after cleanup", model, train_loader, test_emb, hard_reset=True)
         del model
-        torch.cuda.empty_cache()
+        del train_loader
+        del test_emb
 
     # Save all folds together
     if all_test_rows:
@@ -356,8 +495,9 @@ def main():
     texts = dataset["code_summary"]
     labels = dataset["label_enc"]
     class_names = list(le.classes_)
-    
+
     os.environ["WANDB_SILENT"] = "true"
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
     run_5fold_cv(
         texts=texts,
