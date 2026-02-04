@@ -247,7 +247,7 @@ def train_model(model_name, max_seq_length, train_loader, epochs, warmup_steps, 
         torch.cuda.empty_cache()
 
     # Train
-    def run_fit():
+    try:
         model.fit(
             train_objectives=[(train_loader, train_loss)],
             epochs=epochs,
@@ -257,13 +257,14 @@ def train_model(model_name, max_seq_length, train_loader, epochs, warmup_steps, 
             show_progress_bar=True,
             use_amp=use_amp,
         )
-
-    try:
-        run_fit()
     except RuntimeError as exc:
         if "out of memory" in str(exc).lower():
             print("CUDA out of memory. Aborting (CPU fallback disabled).")
         raise
+    finally:
+        # Clear the loss object reference to model
+        del train_loss
+        gc.collect()
 
     return model
 
@@ -282,10 +283,24 @@ def evaluate_fold(model, X_train, y_train, X_test, y_test):
     centroids = build_centroids(train_emb, y_train)
     y_pred = predict_centroid(test_emb, centroids)
 
-    if isinstance(test_emb, torch.Tensor) and test_emb.is_cuda:
-        test_emb = test_emb.detach().cpu()
+    # Move test embeddings to CPU immediately
+    test_emb = test_emb.detach().cpu()
+    
+    # Explicitly delete train embeddings and centroids
+    if isinstance(train_emb, torch.Tensor) and train_emb.is_cuda:
+        train_emb = train_emb.cpu()
     del train_emb
+    
+    # Clear centroids (they hold GPU tensors)
+    for key in list(centroids.keys()):
+        if isinstance(centroids[key], torch.Tensor):
+            centroids[key] = centroids[key].cpu()
     del centroids
+    
+    # Clear CUDA cache after encoding
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    gc.collect()
     
     acc = accuracy_score(y_test, y_pred)
     f1 = f1_score(y_test, y_pred, average="macro")
@@ -349,34 +364,86 @@ def log_vram(stage):
     except Exception as exc:
         print(f"[{stage}] Failed to read VRAM stats: {exc}")
 
-def cleanup_cuda(stage, *objs, hard_reset=False):
+def cleanup_model(model):
+    """Thoroughly clean up a SentenceTransformer model and release GPU memory."""
+    if model is None:
+        return
+    
+    try:
+        # Clear any cached computations
+        if hasattr(model, '_modules'):
+            for module in model._modules.values():
+                if hasattr(module, 'auto_model'):
+                    auto_model = module.auto_model
+                    if hasattr(auto_model, 'cpu'):
+                        auto_model.cpu()
+                    # Clear internal caches
+                    if hasattr(auto_model, '_parameters'):
+                        for param in auto_model.parameters():
+                            param.detach_()
+                            if param.grad is not None:
+                                param.grad = None
+        
+        # Move entire model to CPU
+        model.to('cpu')
+        
+        # Clear any remaining gradients
+        for param in model.parameters():
+            param.detach_()
+            if param.grad is not None:
+                param.grad = None
+                
+    except Exception as e:
+        print(f"Warning during model cleanup: {e}")
+
+
+def cleanup_cuda(stage, *objs):
+    """Clean up CUDA memory after processing."""
+    # First, handle any model objects specially
     for obj in objs:
+        if obj is None:
+            continue
         try:
-            if hasattr(obj, "to"):
+            if isinstance(obj, SentenceTransformer):
+                cleanup_model(obj)
+            elif hasattr(obj, "to"):
                 obj.to("cpu")
+            elif hasattr(obj, 'dataset'):
+                # DataLoader cleanup
+                pass
         except Exception:
             pass
+    
+    # Clear Python garbage
     gc.collect()
+    gc.collect()  # Run twice for cyclic references
+    
     if torch.cuda.is_available():
         try:
             torch.cuda.synchronize()
         except Exception:
             pass
+        
+        # Clear CUDA caches
         torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
+        
+        try:
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
+        
         try:
             torch.cuda.reset_peak_memory_stats()
         except Exception:
             pass
+        
         try:
             torch.cuda.reset_accumulated_memory_stats()
         except Exception:
             pass
-        if hard_reset:
-            try:
-                torch.cuda.cudart().cudaDeviceReset()
-            except Exception:
-                pass
+    
+    # Final garbage collection
+    gc.collect()
     log_vram(stage)
 
 # =========================
@@ -433,6 +500,21 @@ def run_5fold_cv(
         print(f"FOLD {fold}/{num_folds}")
         print("=" * 80)
 
+        # Force garbage collection before each fold
+        gc.collect()
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        
+        # Clear any cached models from transformers
+        try:
+            from transformers import modeling_utils
+            if hasattr(modeling_utils, '_init_weights'):
+                pass  # Just importing can help clear some caches
+        except Exception:
+            pass
+        
         log_vram(f"fold {fold} start")
         
         train_loader, X_train, y_train, X_test, y_test = prepare_fold_data(
@@ -468,11 +550,25 @@ def run_5fold_cv(
         df_fold = save_fold_embeddings(fold, X_test, y_test, y_pred, test_emb)
         all_test_rows.append(df_fold)
 
-        # cleanup
-        cleanup_cuda(f"fold {fold} after cleanup", model, train_loader, test_emb, hard_reset=True)
-        del model
-        del train_loader
+        # Aggressive cleanup - delete in correct order
+        # First, move embeddings to CPU and delete
+        if isinstance(test_emb, torch.Tensor):
+            test_emb = test_emb.cpu()
         del test_emb
+        
+        # Clean up the model thoroughly
+        cleanup_model(model)
+        del model
+        
+        # Clean up data loader
+        del train_loader
+        
+        # Clean up fold data
+        del X_train, y_train, X_test, y_test, y_pred
+        del df_fold
+        
+        # Final CUDA cleanup
+        cleanup_cuda(f"fold {fold} after cleanup")
 
     # Save all folds together
     if all_test_rows:
@@ -484,6 +580,14 @@ def run_5fold_cv(
     log_results(fold_acc, fold_f1, all_true, all_pred, class_names)
 
 def main():
+    # Set CUDA memory configuration BEFORE any CUDA operations
+    os.environ["WANDB_SILENT"] = "true"
+    # Use max_split_size to reduce fragmentation, garbage_collection_threshold to release more aggressively
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,garbage_collection_threshold:0.6,max_split_size_mb:512"
+    
+    # Disable tokenizer parallelism to avoid memory issues
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    
     dataset_path = './data/labeled_verified_data.csv'
     
     try:
@@ -495,9 +599,6 @@ def main():
     texts = dataset["code_summary"]
     labels = dataset["label_enc"]
     class_names = list(le.classes_)
-
-    os.environ["WANDB_SILENT"] = "true"
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
     run_5fold_cv(
         texts=texts,
