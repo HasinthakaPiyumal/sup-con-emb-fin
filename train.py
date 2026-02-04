@@ -1,6 +1,6 @@
 import os
-import random
 import gc
+import random
 import numpy as np
 import pandas as pd
 import torch
@@ -11,6 +11,24 @@ from sklearn.metrics import accuracy_score, f1_score, classification_report
 from sklearn.preprocessing import LabelEncoder
 from torch.utils.data import DataLoader
 from sentence_transformers import SentenceTransformer, InputExample, losses, models
+
+# Allow TF32 for matmul/convolutions (saves memory bandwidth, improves stability on A40)
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+torch.backends.cuda.enable_flash_sdp(True)
+torch.backends.cuda.enable_mem_efficient_sdp(True)
+torch.backends.cuda.enable_math_sdp(False)
+
+# =========================
+# Memory Optimization Settings
+# =========================
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+def clear_memory():
+    """Aggressively clear GPU and CPU memory."""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 # =========================
 # Reproducibility
@@ -25,7 +43,7 @@ def set_seed(seed=42):
 # =========================
 # Load dataset
 # =========================
-def load_and_preprocess_data(filepath, min_samples_per_label=50):
+def load_and_preprocess_data(filepath, min_samples_per_label=20):
     if not os.path.exists(filepath):
         # Fallback to local file if absolute path doesn't exist
         local_path = os.path.basename(filepath)
@@ -106,37 +124,48 @@ def build_triplets(texts, labels, max_triplets_per_class=None):
     return examples
 
 # =========================
-# Centroid classifier in embedding space
+# Centroid classifier in embedding space (Memory Optimized)
 # =========================
 def build_centroids(embeddings, labels):
+    """Build centroids on CPU to save GPU memory."""
     label_to_vecs = {}
     
     # Ensure labels are items if they are tensors
     if isinstance(labels, torch.Tensor):
         labels = labels.tolist()
+    
+    # Move embeddings to CPU for centroid computation
+    if isinstance(embeddings, torch.Tensor):
+        embeddings = embeddings.cpu()
         
     for e, y in zip(embeddings, labels):
+        if isinstance(e, torch.Tensor):
+            e = e.cpu()
         label_to_vecs.setdefault(y, []).append(e)
 
     centroids = {}
     for y, vecs in label_to_vecs.items():
         c = torch.stack(vecs).mean(dim=0)
         centroids[y] = F.normalize(c, dim=-1)
+    
     return centroids
 
 def predict_centroid(embeddings, centroids):
+    """Predict using centroids - all computation on CPU to save GPU memory."""
     classes = sorted(centroids.keys())
-    # Stack centroids handling potential device mismatches
     c_list = [centroids[c] for c in classes]
     if not c_list:
         return []
     
-    first_device = c_list[0].device
-    C = torch.stack(c_list, dim=0).to(embeddings.device)
+    # Compute on CPU to save GPU memory
+    C = torch.stack(c_list, dim=0).cpu()
+    embeddings_cpu = embeddings.cpu() if embeddings.is_cuda else embeddings
     
-    sims = embeddings @ C.T
-    pred_idx = sims.argmax(dim=1).cpu().numpy()
+    sims = embeddings_cpu @ C.T
+    pred_idx = sims.argmax(dim=1).numpy()
     preds = [classes[i] for i in pred_idx]
+    
+    del C, embeddings_cpu, sims
     return preds
 
 def init_wandb(model_name, config):
@@ -146,7 +175,7 @@ def init_wandb(model_name, config):
         config=config
     )
 
-def prepare_fold_data(texts, labels, train_idx, test_idx, max_pairs_per_class, batch_size):
+def prepare_fold_data(texts, labels, train_idx, test_idx, max_pairs_per_class):
     X_train = texts[train_idx].tolist()
     y_train = labels[train_idx].tolist()
     X_test = texts[test_idx].tolist()
@@ -163,153 +192,125 @@ def prepare_fold_data(texts, labels, train_idx, test_idx, max_pairs_per_class, b
     if len(train_examples) < 4:
         return None, None, None, None
 
+    return train_examples, X_train, y_train, X_test, y_test
+
+def train_model(model_name, max_seq_length, train_examples, batch_size, epochs, warmup_steps, lr):
+    # Clear memory before loading model
+    clear_memory()
+    
+    # Load model (remote code needed for Nomic)
+    model = SentenceTransformer(model_name, trust_remote_code=True)
+    model.max_seq_length = max_seq_length
+    use_bf16 = False
+    if torch.cuda.is_available():
+        model = model.to(torch.bfloat16)
+        use_bf16 = True
+    
+    # Enable gradient checkpointing to reduce memory usage during training
+    if hasattr(model._first_module(), 'auto_model'):
+        auto_model = model._first_module().auto_model
+        if hasattr(auto_model, 'gradient_checkpointing_enable'):
+            auto_model.gradient_checkpointing_enable()
+            print("Enabled gradient checkpointing for memory optimization")
+        if hasattr(auto_model, "config"):
+            auto_model.config.use_cache = False
+            if hasattr(auto_model.config, "attn_implementation"):
+                auto_model.config.attn_implementation = "sdpa"
+
+    train_loss = losses.MultipleNegativesRankingLoss(model)
+
+    # Smart batching to reduce padding and VRAM usage
     train_loader = DataLoader(
         train_examples,
         shuffle=True,
         batch_size=batch_size,
-        drop_last=True
+        drop_last=False,
+        collate_fn=model.smart_batching_collate,
     )
-    
-    return train_loader, X_train, y_train, X_test, y_test
 
-def train_model(model_name, max_seq_length, train_loader, epochs, warmup_steps, lr):
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is required but not available.")
-
-    def log_cuda_memory():
-        try:
-            free_bytes, total_bytes = torch.cuda.mem_get_info()
-            free_gb = free_bytes / (1024 ** 3)
-            total_gb = total_bytes / (1024 ** 3)
-            print(f"CUDA memory free/total: {free_gb:.2f} / {total_gb:.2f} GiB")
-        except Exception:
-            pass
-
-    def enable_gradient_checkpointing(st_model):
-        auto_model = None
-        if hasattr(st_model, "_first_module"):
-            first_module = st_model._first_module()
-            auto_model = getattr(first_module, "auto_model", None)
-        if auto_model is None:
-            auto_model = getattr(st_model, "auto_model", None)
-
-        if auto_model is not None and hasattr(auto_model, "gradient_checkpointing_enable"):
-            auto_model.gradient_checkpointing_enable()
-            if hasattr(auto_model, "config") and hasattr(auto_model.config, "use_cache"):
-                auto_model.config.use_cache = False
-
-    def build_model(device):
-        model_kwargs = {}
-        if device == "cuda":
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
-            model_kwargs["torch_dtype"] = torch.float16
-            model_kwargs["attn_implementation"] = "sdpa"
-
-        st_model = SentenceTransformer(
-            model_name,
-            trust_remote_code=True,
-            device=device,
-            model_kwargs=model_kwargs if model_kwargs else None,
-        )
-        st_model.max_seq_length = max_seq_length
-        enable_gradient_checkpointing(st_model)
-        return st_model
-
-    device = "cuda"
-    log_cuda_memory()
-
-    model = build_model(device)
-
-    # Mixed precision on GPU (avoid GradScaler with fp16 weights)
-    use_amp = device == "cuda" and False
-
-    # Use 8-bit optimizer states to reduce GPU memory usage (full-parameter fine-tuning)
+    # Prefer 8-bit AdamW if available, otherwise use fused AdamW when supported
     optimizer_class = torch.optim.AdamW
-    optimizer_params = {"lr": lr}
-    if device == "cuda":
-        try:
-            import bitsandbytes as bnb
-
-            if hasattr(bnb.optim, "PagedAdamW8bit"):
-                optimizer_class = bnb.optim.PagedAdamW8bit
-                print("Using bitsandbytes PagedAdamW8bit optimizer for reduced memory.")
-            else:
-                optimizer_class = bnb.optim.AdamW8bit
-                print("Using bitsandbytes AdamW8bit optimizer for reduced memory.")
-        except Exception as exc:
-            print(f"bitsandbytes unavailable or failed to load ({exc}); falling back to AdamW.")
-
-    train_loss = losses.MultipleNegativesRankingLoss(model)
-    # train_loss = losses.TripletLoss(model=model, distance_metric=losses.TripletDistanceMetric.COSINE)
-
-    if device == "cuda":
-        torch.cuda.empty_cache()
-
-    # Train
+    optimizer_params = {"lr": lr, "weight_decay": 0.01}
     try:
-        model.fit(
-            train_objectives=[(train_loader, train_loss)],
-            epochs=epochs,
-            warmup_steps=warmup_steps,
-            optimizer_class=optimizer_class,
-            optimizer_params=optimizer_params,
-            show_progress_bar=True,
-            use_amp=use_amp,
-        )
-    except RuntimeError as exc:
-        if "out of memory" in str(exc).lower():
-            print("CUDA out of memory. Aborting (CPU fallback disabled).")
-        raise
-    finally:
-        # Clear the loss object reference to model
-        del train_loss
-        gc.collect()
+        import bitsandbytes as bnb  # type: ignore
 
+        optimizer_class = bnb.optim.AdamW8bit
+    except Exception:
+        import inspect
+
+        if "fused" in inspect.signature(torch.optim.AdamW).parameters:
+            optimizer_params["fused"] = True
+
+    # Train with memory-efficient settings
+    model.fit(
+        train_objectives=[(train_loader, train_loss)],
+        epochs=epochs,
+        warmup_steps=warmup_steps,
+        optimizer_class=optimizer_class,
+        optimizer_params=optimizer_params,
+        show_progress_bar=True,
+        use_amp=not use_bf16,
+    )
     return model
 
 
-def evaluate_fold(model, X_train, y_train, X_test, y_test):
-    # Encode embeddings
-    train_emb = model.encode(
-        X_train, convert_to_tensor=True,
-        normalize_embeddings=True, show_progress_bar=False
-    )
-    test_emb = model.encode(
-        X_test, convert_to_tensor=True,
-        normalize_embeddings=True, show_progress_bar=False
-    )
+@torch.no_grad()
+def encode_in_batches(model, texts, batch_size=32, normalize=True):
+    """Memory-efficient encoding in smaller batches with immediate CPU transfer."""
+    all_embeddings = []
+    
+    for i in range(0, len(texts), batch_size):
+        batch_texts = texts[i:i + batch_size]
+        batch_emb = model.encode(
+            batch_texts,
+            convert_to_tensor=True,
+            normalize_embeddings=normalize,
+            show_progress_bar=False
+        )
+        # Immediately move to CPU to free GPU memory
+        all_embeddings.append(batch_emb.cpu())
+        
+        # Clear GPU cache periodically
+        if (i // batch_size) % 10 == 0:
+            clear_memory()
+    
+    return torch.cat(all_embeddings, dim=0)
 
+
+def evaluate_fold(model, X_train, y_train, X_test, y_test, encode_batch_size=32):
+    """Memory-optimized evaluation with batched encoding."""
+    model.eval()
+    clear_memory()
+    
+    # Encode in batches to avoid OOM
+    print("Encoding training set...")
+    train_emb = encode_in_batches(model, X_train, batch_size=encode_batch_size)
+    
+    print("Encoding test set...")
+    test_emb = encode_in_batches(model, X_test, batch_size=encode_batch_size)
+    
+    # Build centroids on CPU
     centroids = build_centroids(train_emb, y_train)
-    y_pred = predict_centroid(test_emb, centroids)
-
-    # Move test embeddings to CPU immediately
-    test_emb = test_emb.detach().cpu()
     
-    # Explicitly delete train embeddings and centroids
-    if isinstance(train_emb, torch.Tensor) and train_emb.is_cuda:
-        train_emb = train_emb.cpu()
+    # Free train embeddings after building centroids
     del train_emb
+    clear_memory()
     
-    # Clear centroids (they hold GPU tensors)
-    for key in list(centroids.keys()):
-        if isinstance(centroids[key], torch.Tensor):
-            centroids[key] = centroids[key].cpu()
-    del centroids
-    
-    # Clear CUDA cache after encoding
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    gc.collect()
+    y_pred = predict_centroid(test_emb, centroids)
     
     acc = accuracy_score(y_test, y_pred)
     f1 = f1_score(y_test, y_pred, average="macro")
     
+    # Return embeddings on CPU
     return acc, f1, y_pred, test_emb
 
 def save_fold_embeddings(fold, X_test, y_test, y_pred, test_emb):
-    # Convert embeddings to dataframe efficiently
-    emb_np = test_emb.detach().cpu().numpy()
+    # Convert embeddings to dataframe efficiently (embeddings should already be on CPU)
+    if isinstance(test_emb, torch.Tensor):
+        emb_np = test_emb.detach().float().cpu().numpy()
+    else:
+        emb_np = test_emb
+    
     df_meta = pd.DataFrame({
         "fold": fold,
         "label": y_test,
@@ -320,6 +321,9 @@ def save_fold_embeddings(fold, X_test, y_test, y_pred, test_emb):
         columns=[f"emb_{i}" for i in range(emb_np.shape[1])]
     )
     df_fold = pd.concat([df_meta, df_emb], axis=1)
+    
+    # Free memory
+    del emb_np
     return df_fold
 
 def log_results(fold_acc, fold_f1, all_true, all_pred, class_names):
@@ -347,105 +351,6 @@ def log_results(fold_acc, fold_f1, all_true, all_pred, class_names):
     
     wandb.finish()
 
-def log_vram(stage):
-    if not torch.cuda.is_available():
-        print(f"[{stage}] CUDA not available.")
-        return
-    try:
-        free_bytes, total_bytes = torch.cuda.mem_get_info()
-        free_gb = free_bytes / (1024 ** 3)
-        total_gb = total_bytes / (1024 ** 3)
-        allocated_gb = torch.cuda.memory_allocated() / (1024 ** 3)
-        reserved_gb = torch.cuda.memory_reserved() / (1024 ** 3)
-        print(
-            f"[{stage}] VRAM free/total: {free_gb:.2f}/{total_gb:.2f} GiB | "
-            f"allocated: {allocated_gb:.2f} GiB | reserved: {reserved_gb:.2f} GiB"
-        )
-    except Exception as exc:
-        print(f"[{stage}] Failed to read VRAM stats: {exc}")
-
-def cleanup_model(model):
-    """Thoroughly clean up a SentenceTransformer model and release GPU memory."""
-    if model is None:
-        return
-    
-    try:
-        # Clear any cached computations
-        if hasattr(model, '_modules'):
-            for module in model._modules.values():
-                if hasattr(module, 'auto_model'):
-                    auto_model = module.auto_model
-                    if hasattr(auto_model, 'cpu'):
-                        auto_model.cpu()
-                    # Clear internal caches
-                    if hasattr(auto_model, '_parameters'):
-                        for param in auto_model.parameters():
-                            param.detach_()
-                            if param.grad is not None:
-                                param.grad = None
-        
-        # Move entire model to CPU
-        model.to('cpu')
-        
-        # Clear any remaining gradients
-        for param in model.parameters():
-            param.detach_()
-            if param.grad is not None:
-                param.grad = None
-                
-    except Exception as e:
-        print(f"Warning during model cleanup: {e}")
-
-
-def cleanup_cuda(stage, *objs):
-    """Clean up CUDA memory after processing."""
-    # First, handle any model objects specially
-    for obj in objs:
-        if obj is None:
-            continue
-        try:
-            if isinstance(obj, SentenceTransformer):
-                cleanup_model(obj)
-            elif hasattr(obj, "to"):
-                obj.to("cpu")
-            elif hasattr(obj, 'dataset'):
-                # DataLoader cleanup
-                pass
-        except Exception:
-            pass
-    
-    # Clear Python garbage
-    gc.collect()
-    gc.collect()  # Run twice for cyclic references
-    
-    if torch.cuda.is_available():
-        try:
-            torch.cuda.synchronize()
-        except Exception:
-            pass
-        
-        # Clear CUDA caches
-        torch.cuda.empty_cache()
-        
-        try:
-            torch.cuda.ipc_collect()
-        except Exception:
-            pass
-        
-        try:
-            torch.cuda.reset_peak_memory_stats()
-        except Exception:
-            pass
-        
-        try:
-            torch.cuda.reset_accumulated_memory_stats()
-        except Exception:
-            pass
-    
-    # Final garbage collection
-    gc.collect()
-    log_vram(stage)
-
 # =========================
 # Main: 5-fold CV fine-tuning and evaluation
 # =========================
@@ -459,7 +364,7 @@ def run_5fold_cv(
     batch_size=4,
     lr=2e-5,
     warmup_steps=10,
-    max_pairs_per_class=200,
+    max_pairs_per_class=100,
     max_seq_length=256,
     seed=42,
     save_dir="saved_test_embeddings",
@@ -499,40 +404,22 @@ def run_5fold_cv(
         print("\n" + "=" * 80)
         print(f"FOLD {fold}/{num_folds}")
         print("=" * 80)
-
-        # Force garbage collection before each fold
-        gc.collect()
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
         
-        # Clear any cached models from transformers
-        try:
-            from transformers import modeling_utils
-            if hasattr(modeling_utils, '_init_weights'):
-                pass  # Just importing can help clear some caches
-        except Exception:
-            pass
+        # Clear memory before each fold
+        clear_memory()
         
-        log_vram(f"fold {fold} start")
-        
-        train_loader, X_train, y_train, X_test, y_test = prepare_fold_data(
-            texts, labels, train_idx, test_idx, max_pairs_per_class, batch_size
+        train_examples, X_train, y_train, X_test, y_test = prepare_fold_data(
+            texts, labels, train_idx, test_idx, max_pairs_per_class
         )
 
-        if train_loader is None:
+        if train_examples is None:
             print("Not enough same-class pairs to train. Skipping fold.")
             continue
 
-        model = train_model(
-            model_name,
-            max_seq_length,
-            train_loader,
-            epochs,
-            warmup_steps,
-            lr,
-        )
+        model = train_model(model_name, max_seq_length, train_examples, batch_size, epochs, warmup_steps, lr)
+        
+        # Clear training artifacts before evaluation
+        clear_memory()
         
         acc, f1, y_pred, test_emb = evaluate_fold(model, X_train, y_train, X_test, y_test)
 
@@ -550,25 +437,13 @@ def run_5fold_cv(
         df_fold = save_fold_embeddings(fold, X_test, y_test, y_pred, test_emb)
         all_test_rows.append(df_fold)
 
-        # Aggressive cleanup - delete in correct order
-        # First, move embeddings to CPU and delete
-        if isinstance(test_emb, torch.Tensor):
-            test_emb = test_emb.cpu()
-        del test_emb
+        # Aggressive cleanup after each fold
+        del model, train_examples, test_emb, df_fold
+        del X_train, y_train, X_test, y_test
+        clear_memory()
         
-        # Clean up the model thoroughly
-        cleanup_model(model)
-        del model
-        
-        # Clean up data loader
-        del train_loader
-        
-        # Clean up fold data
-        del X_train, y_train, X_test, y_test, y_pred
-        del df_fold
-        
-        # Final CUDA cleanup
-        cleanup_cuda(f"fold {fold} after cleanup")
+        print(f"GPU Memory after fold {fold}: {torch.cuda.memory_allocated() / 1e9:.2f} GB allocated, "
+              f"{torch.cuda.memory_reserved() / 1e9:.2f} GB reserved")
 
     # Save all folds together
     if all_test_rows:
@@ -580,14 +455,6 @@ def run_5fold_cv(
     log_results(fold_acc, fold_f1, all_true, all_pred, class_names)
 
 def main():
-    # Set CUDA memory configuration BEFORE any CUDA operations
-    os.environ["WANDB_SILENT"] = "true"
-    # Use max_split_size to reduce fragmentation, garbage_collection_threshold to release more aggressively
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,garbage_collection_threshold:0.6,max_split_size_mb:512"
-    
-    # Disable tokenizer parallelism to avoid memory issues
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    
     dataset_path = './data/labeled_verified_data.csv'
     
     try:
@@ -599,6 +466,8 @@ def main():
     texts = dataset["code_summary"]
     labels = dataset["label_enc"]
     class_names = list(le.classes_)
+    
+    os.environ["WANDB_SILENT"] = "true"
 
     run_5fold_cv(
         texts=texts,
