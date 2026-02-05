@@ -480,7 +480,7 @@ def main():
         max_pairs_per_class=1000,
         max_seq_length=768,
         seed=42,
-        model_name='nomic-ai/nomic-embed-code'
+        model_name='microsoft/Phi-3.5-mini-instruct'
     )
 
 if __name__ == "__main__":
