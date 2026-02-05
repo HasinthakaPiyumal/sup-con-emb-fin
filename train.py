@@ -93,37 +93,6 @@ def build_positive_pairs(texts, labels, max_pairs_per_class=None):
     return examples
 
 # =========================
-# Build Triplet training examples
-# =========================
-def build_triplets(texts, labels, max_triplets_per_class=None):
-    label_to_idxs = {}
-    for i, y in enumerate(labels):
-        label_to_idxs.setdefault(y, []).append(i)
-
-    examples = []
-    for y, idxs in label_to_idxs.items():
-        if len(idxs) < 2:
-            continue
-
-        triplets = []
-        for i in range(len(idxs)):
-            for j in range(len(idxs)):
-                if i != j:
-                    triplets.append((idxs[i], idxs[j]))
-
-        if max_triplets_per_class is not None and len(triplets) > max_triplets_per_class:
-            triplets = random.sample(triplets, max_triplets_per_class)
-
-        for a, p in triplets:
-            # Select a random negative example
-            neg_idxs = [idx for label, idx_list in label_to_idxs.items() if label != y for idx in idx_list]
-            n = random.choice(neg_idxs)
-            examples.append(InputExample(texts=[str(texts[a]), str(texts[p]), str(texts[n])]))
-
-    random.shuffle(examples)
-    return examples
-
-# =========================
 # Centroid classifier in embedding space (Memory Optimized)
 # =========================
 def build_centroids(embeddings, labels):
@@ -184,10 +153,6 @@ def prepare_fold_data(texts, labels, train_idx, test_idx, max_pairs_per_class):
     train_examples = build_positive_pairs(
         X_train, y_train, max_pairs_per_class=max_pairs_per_class
     )
-
-    # train_examples = build_triplets(
-    #     X_train, y_train, max_triplets_per_class=max_pairs_per_class
-    # )
 
     if len(train_examples) < 4:
         return None, None, None, None

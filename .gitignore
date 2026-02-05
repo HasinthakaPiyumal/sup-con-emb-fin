@@ -2,3 +2,4 @@
 wandb/
 checkpoints/
 saved_test_embeddings/
+fine_tuned_ballerina_coderank/

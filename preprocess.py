@@ -4,49 +4,40 @@ import torch
 from sentence_transformers import SentenceTransformer, util
 from datasets import Dataset
 import os
+import pandas as pd
+import random
 
 # Configuration
-DATA_FILE = "data.json"
-MODEL_NAME = "nomic-ai/CodeRankEmbed"
-QUERY_PREFIX = "Represent this query for searching relevant code"
+DATA_FILE = "data/labeled_verified_data.csv"
+MODEL_NAME = "google-bert/bert-base-uncased"
+QUERY_PREFIX = "Represent this code summary for searching relevant code summaries"
 TOP_K_FILTER = 2  # Consistency filtering: correct code must be in top-k
 NUM_NEGATIVES = 3 # Number of hard negatives to mine per query
-OUTPUT_FILE = "processed_data_.jsonl"
+OUTPUT_FILE = "data/processed_data_.jsonl"
 
-def extract_code(answer_text):
-    """Extracts Ballerina code from the answer field."""
-    # Look for content inside <CODE> tags
-    code_match = re.search(r"<CODE>(.*?)</CODE>", answer_text, re.DOTALL)
-    if not code_match:
-        return None
-    
-    content = code_match.group(1)
-    
-    # Extract content from markdown code blocks if present
-    # Handles ```ballerina ... ``` or just ``` ... ```
-    markdown_match = re.search(r"```(?:ballerina)?(.*?)```", content, re.DOTALL)
-    if markdown_match:
-        return markdown_match.group(1).strip()
-    
-    return content.strip()
 
 def main():
     print(f"Loading data from {DATA_FILE}...")
-    with open(DATA_FILE, 'r') as f:
-        raw_data = json.load(f)
     
-    print(f"Found {len(raw_data)} raw examples.")
+    dataset = pd.read_csv(DATA_FILE)
+    counts = dataset["label"].value_counts()
+    valid_labels = counts[counts >= 20].index
+    dataset = dataset[dataset["label"].isin(valid_labels)].reset_index(drop=True)
+    
+    
+    print(f"Found {len(dataset)} raw examples.")
     
     # 1. Extraction and Formatting
     extracted_data = []
-    for item in raw_data:
-        instruction = item.get('instruction')
-        answer = item.get('answer')
-        
+    for _, item in dataset.iterrows():
+        instruction = item['code_summary']
+        class_label = item['label']
+        other_samples_for_class = dataset[(dataset["label"] == class_label) & (dataset['code_summary'] != instruction)]
+        answer = random.choice(other_samples_for_class['code_summary'].tolist()) if not other_samples_for_class.empty else ""
+        code = answer
         if not instruction or not answer:
             continue
-            
-        code = extract_code(answer)
+
         if not code:
             continue
             
@@ -56,7 +47,10 @@ def main():
         extracted_data.append({
             "query": query,
             "code": code,
-            "original_instruction": instruction # Keep for reference
+            "original_instruction": instruction, # Keep for reference
+            "file": item['file'] if 'file' in item else None,
+            "label": item['label'] if 'label' in item else None
+
         })
         
     print(f"Extracted {len(extracted_data)} valid (query, code) pairs.")
@@ -129,6 +123,8 @@ def main():
         example = {
             "query": extracted_data[i]['query'],
             "positive": extracted_data[i]['code'],
+            "file": extracted_data[i]['file'],
+            "label": extracted_data[i]['label'],
             "negatives": negatives
         }
         final_dataset.append(example)
