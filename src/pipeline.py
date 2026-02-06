@@ -16,12 +16,52 @@ from .io_utils import save_fold_embeddings, save_all_embeddings
 from .evaluation import evaluate_saved_embeddings_5fold
 
 
+def build_wandb_tags(config: dict) -> List[str]:
+    """Build tags for wandb run based on configuration."""
+    tags = []
+    
+    # Model tag
+    model_short = config["model_name"].split("/")[-1]
+    tags.append(f"model:{model_short}")
+    
+    # Loss function tag
+    loss_type = config.get("loss_type", "mnrl")
+    tags.append(f"loss:{loss_type}")
+    
+    # Hard negative mining tag
+    use_hn = config.get("use_hard_negatives", False)
+    if use_hn:
+        num_hn = config.get("num_hard_negatives", 3)
+        tags.append("hard-negatives")
+        tags.append(f"hn:{num_hn}")
+    else:
+        tags.append("no-hard-negatives")
+    
+    # Training config tags
+    tags.append(f"epochs:{config.get('epochs', 1)}")
+    tags.append(f"bs:{config.get('batch_size', 4)}")
+    tags.append(f"seq:{config.get('max_seq_length', 256)}")
+    
+    # Folds tag
+    tags.append(f"folds:{config.get('num_folds', 5)}")
+    
+    return tags
+
+
 def init_wandb(model_name: str, config: dict) -> None:
-    """Initialize Weights & Biases logging."""
+    """Initialize Weights & Biases logging with tags."""
+    tags = build_wandb_tags(config)
+    
+    # Build run name: model-loss-hn_status-seq_length
+    loss_type = config.get("loss_type", "mnrl")
+    hn_status = "hn" if config.get("use_hard_negatives", False) else "no-hn"
+    run_name = f"{model_name.split('/')[-1]}-{loss_type}-{hn_status}-{config['max_seq_length']}"
+    
     wandb.init(
         project="code-classification-super-cons-learn[AI Patterns]",
-        name=f"{model_name.split('/')[-1]}-{config['max_seq_length']}",
+        name=run_name,
         config=config,
+        tags=tags,
     )
 
 
