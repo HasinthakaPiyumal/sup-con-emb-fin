@@ -1,6 +1,6 @@
 """Embedding model training and inference."""
 
-from typing import List, Optional, Type
+from typing import List, Optional, Type, Union
 
 import torch
 from torch.utils.data import DataLoader
@@ -8,6 +8,7 @@ from sentence_transformers import SentenceTransformer, InputExample, losses
 from sentence_transformers import models as sbert_models
 
 from .config import clear_memory
+from .data import LossType
 
 
 def _add_dense_head(
@@ -74,6 +75,38 @@ def _get_optimizer() -> tuple:
     return opt_cls, opt_kwargs
 
 
+def get_loss_function(
+    model: SentenceTransformer,
+    loss_type: LossType,
+    margin: float = 0.5,
+) -> torch.nn.Module:
+    """
+    Get the appropriate loss function for the specified loss type.
+    
+    Args:
+        model: SentenceTransformer model.
+        loss_type: Type of loss function to use.
+        margin: Margin for contrastive/triplet loss (default: 0.5).
+    
+    Returns:
+        Loss function module.
+    """
+    if loss_type == LossType.CONTRASTIVE:
+        # ContrastiveLoss: expects pairs with labels (0=dissimilar, 1=similar)
+        return losses.ContrastiveLoss(model=model, margin=margin)
+    
+    elif loss_type == LossType.TRIPLET:
+        # TripletLoss: expects (anchor, positive, negative) triplets
+        return losses.TripletLoss(model=model, triplet_margin=margin)
+    
+    elif loss_type == LossType.MNRL:
+        # MultipleNegativesRankingLoss: (anchor, positive, [negatives...])
+        return losses.MultipleNegativesRankingLoss(model=model)
+    
+    else:
+        raise ValueError(f"Unknown loss type: {loss_type}")
+
+
 def train_model(
     model_name: str,
     max_seq_length: int,
@@ -82,20 +115,24 @@ def train_model(
     epochs: int,
     warmup_steps: int,
     lr: float,
-    dense_dim: int = 8
+    dense_dim: int = 8,
+    loss_type: LossType = LossType.MNRL,
+    loss_margin: float = 0.5,
 ) -> SentenceTransformer:
     """
-    Train a SentenceTransformer model with contrastive loss.
+    Train a SentenceTransformer model with configurable loss function.
     
     Args:
         model_name: HuggingFace model name or path.
         max_seq_length: Maximum sequence length.
-        train_examples: List of InputExample pairs.
+        train_examples: List of InputExample pairs/triplets.
         batch_size: Training batch size.
         epochs: Number of training epochs.
         warmup_steps: Learning rate warmup steps.
         lr: Learning rate.
         dense_dim: Output dimension for dense projection head.
+        loss_type: Type of loss function to use.
+        loss_margin: Margin for contrastive/triplet loss.
     
     Returns:
         Trained SentenceTransformer model.
@@ -106,8 +143,8 @@ def train_model(
     model = SentenceTransformer(model_name, trust_remote_code=True)
     model.max_seq_length = max_seq_length
     
-    if dense_dim and dense_dim > 0:
-        model = _add_dense_head(model, out_dim=dense_dim)
+    # if dense_dim and dense_dim > 0:
+    #     model = _add_dense_head(model, out_dim=dense_dim)
     
     # Use bfloat16 if available
     use_bf16 = torch.cuda.is_available()
@@ -125,7 +162,10 @@ def train_model(
         collate_fn=model.smart_batching_collate
     )
     
-    loss_fn = losses.MultipleNegativesRankingLoss(model)
+    # Get the appropriate loss function
+    loss_fn = get_loss_function(model, loss_type, margin=loss_margin)
+    print(f"  Using loss: {loss_type.value} (margin={loss_margin})")
+    
     opt_cls, opt_kwargs = _get_optimizer()
     opt_kwargs["lr"] = lr
     

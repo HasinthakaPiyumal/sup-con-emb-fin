@@ -1,7 +1,7 @@
 """Main training pipeline with cross-validation."""
 
 import os
-from typing import List, Sequence
+from typing import List, Sequence, Union
 
 import numpy as np
 import wandb
@@ -9,7 +9,7 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import accuracy_score, f1_score
 
 from .config import set_seed, clear_memory
-from .data import prepare_fold_data
+from .data import prepare_fold_data, LossType
 from .model import train_model, encode_in_batches
 from .classifiers import build_centroids, predict_centroid
 from .io_utils import save_fold_embeddings, save_all_embeddings
@@ -40,6 +40,13 @@ def run_5fold_cv(
     seed: int = 42,
     save_dir: str = "saved_test_embeddings",
     dense_dim: int = 8,
+    # Loss function settings
+    loss_type: Union[LossType, str] = LossType.MNRL,
+    loss_margin: float = 0.5,
+    # Hard negative mining settings
+    use_hard_negatives: bool = False,
+    num_hard_negatives: int = 3,
+    hn_base_model: str = "all-MiniLM-L6-v2",
 ) -> None:
     """
     Run two-phase 5-fold cross-validation.
@@ -62,7 +69,15 @@ def run_5fold_cv(
         seed: Random seed.
         save_dir: Directory to save embeddings.
         dense_dim: Output dimension for projection head.
+        loss_type: Loss function type ("contrastive", "mnrl", "triplet" or LossType enum).
+        loss_margin: Margin for contrastive/triplet loss.
+        use_hard_negatives: Whether to use hard negative mining.
+        num_hard_negatives: Number of hard negatives per sample.
+        hn_base_model: Base model for hard negative mining embeddings.
     """
+    # Convert string loss_type to enum if needed
+    if isinstance(loss_type, str):
+        loss_type = LossType(loss_type)
     set_seed(seed)
     
     # Build config for logging
@@ -77,8 +92,24 @@ def run_5fold_cv(
         "max_seq_length": max_seq_length,
         "seed": seed,
         "dense_dim": dense_dim,
+        "loss_type": loss_type.value,
+        "loss_margin": loss_margin,
+        "use_hard_negatives": use_hard_negatives,
+        "num_hard_negatives": num_hard_negatives,
+        "hn_base_model": hn_base_model,
     }
     init_wandb(model_name, config)
+    
+    print(f"\n{'=' * 80}")
+    print(f"TRAINING CONFIGURATION")
+    print(f"{'=' * 80}")
+    print(f"  Loss function: {loss_type.value}")
+    if loss_type in (LossType.CONTRASTIVE, LossType.TRIPLET):
+        print(f"  Loss margin: {loss_margin}")
+    if use_hard_negatives:
+        print(f"  Hard negative mining: {num_hard_negatives} negatives using {hn_base_model}")
+    else:
+        print(f"  Hard negative mining: disabled")
     
     # Convert to arrays
     texts = np.array(list(texts), dtype=object)
@@ -97,19 +128,28 @@ def run_5fold_cv(
         
         clear_memory()
         
-        # Prepare fold data
-        prep = prepare_fold_data(texts, labels, train_idx, test_idx, max_pairs_per_class)
+        # Prepare fold data with optional hard negative mining
+        prep = prepare_fold_data(
+            texts, labels, train_idx, test_idx, max_pairs_per_class,
+            loss_type=loss_type,
+            use_hard_negatives=use_hard_negatives,
+            num_hard_negatives=num_hard_negatives,
+            hn_base_model=hn_base_model,
+        )
         if prep[0] is None:
             print("Skipping fold: not enough pairs.")
             continue
         
         train_examples, X_train, y_train, X_test, y_test = prep
+        print(f"  Generated {len(train_examples)} training examples")
         
         # Train model
         model = train_model(
             model_name, max_seq_length, train_examples,
             batch_size, epochs, warmup_steps, lr,
-            dense_dim=dense_dim
+            dense_dim=dense_dim,
+            loss_type=loss_type,
+            loss_margin=loss_margin,
         )
         
         clear_memory()

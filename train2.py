@@ -17,7 +17,7 @@ import gc
 PROCESSED_DATA_FILE = "data/processed_data_.jsonl"
 MODEL_NAME = "google-bert/bert-base-uncased"
 OUTPUT_DIR = "fine_tuned_ballerina_coderank"
-BATCH_SIZE = 4
+BATCH_SIZE = 32
 NUM_EPOCHS = 3
 LEARNING_RATE = 2e-5
 HF_TOKEN = ""
