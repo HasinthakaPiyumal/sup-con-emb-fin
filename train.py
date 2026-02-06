@@ -23,20 +23,20 @@ from src.pipeline import run_5fold_cv
 
 # Loss function: "contrastive", "mnrl", or "triplet"
 LOSS_TYPE = "contrastive"  # Options: LossType.CONTRASTIVE, LossType.MNRL, LossType.TRIPLET
-LOSS_MARGIN = 0.5  # Margin for contrastive/triplet loss
+LOSS_MARGIN = 0.8  # Margin for contrastive/triplet loss
 
 # Hard negative mining
-USE_HARD_NEGATIVES = True
-NUM_HARD_NEGATIVES = 300
+USE_HARD_NEGATIVES = False
+NUM_HARD_NEGATIVES = 200
 HN_BASE_MODEL = "all-MiniLM-L6-v2"  # Fast model for mining
 
 # Model and training
 MODEL_NAME = "google-bert/bert-base-uncased"
 EPOCHS = 3
-BATCH_SIZE = 32
+BATCH_SIZE = 8
 LEARNING_RATE = 2e-5
 WARMUP_STEPS = 10
-MAX_PAIRS_PER_CLASS = 1000
+MAX_PAIRS_PER_CLASS = 200
 MAX_SEQ_LENGTH = 768
 SEED = 42
 DENSE_DIM = 8

@@ -144,7 +144,7 @@ def train_model(
     model.max_seq_length = max_seq_length
     
     # if dense_dim and dense_dim > 0:
-    #     model = _add_dense_head(model, out_dim=dense_dim)
+    #     model = _add_dense_head(model, out_dim=dense_dim,activation=torch.nn.Linear)
     
     # Use bfloat16 if available
     use_bf16 = torch.cuda.is_available()
