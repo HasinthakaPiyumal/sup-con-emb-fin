@@ -31,7 +31,7 @@ NUM_HARD_NEGATIVES = 10
 HN_BASE_MODEL = "google-bert/bert-base-uncased"  # Fast model for mining
 
 # Model and training
-MODEL_NAME = "nomic-ai/nomic-embed-code"
+MODEL_NAME = "BAAI/bge-reasoner-embed-qwen3-8b-0923"
 EPOCHS = 3
 BATCH_SIZE = 32
 LEARNING_RATE = 2e-5
