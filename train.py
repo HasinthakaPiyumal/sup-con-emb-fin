@@ -31,7 +31,8 @@ NUM_HARD_NEGATIVES = 10
 HN_BASE_MODEL = "google-bert/bert-base-uncased"  # Fast model for mining
 
 # Model and training
-MODEL_NAME = "BAAI/bge-reasoner-embed-qwen3-8b-0923"
+# MODEL_NAME = "BAAI/bge-reasoner-embed-qwen3-8b-0923"
+MODEL_NAME = "google-bert/bert-base-uncased"
 EPOCHS = 3
 BATCH_SIZE = 32
 LEARNING_RATE = 2e-5
@@ -44,7 +45,7 @@ DENSE_DIM = 8
 
 def main():
     """Main entry point for training."""
-    dataset_path = "./data/labeled_verified_data.csv"
+    dataset_path = "./data/feb-10-2026-community-descriptions-concated.csv"
     
     try:
         dataset, label_encoder = load_and_preprocess_data(dataset_path)

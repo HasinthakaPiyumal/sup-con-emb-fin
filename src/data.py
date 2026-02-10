@@ -21,7 +21,7 @@ class LossType(str, Enum):
 
 def load_and_preprocess_data(
     filepath: str,
-    min_samples_per_label: int = 20
+    min_samples_per_label: int = 120
 ) -> Tuple[pd.DataFrame, LabelEncoder]:
     """
     Load dataset and filter labels with insufficient samples.

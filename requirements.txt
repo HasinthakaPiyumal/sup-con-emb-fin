@@ -17,6 +17,7 @@ datasets
 accelerate
 peft
 bitsandbytes
+hf_transfer
 
 # Logging
 wandb
