@@ -7,7 +7,7 @@ import pandas as pd
 import torch
 import wandb
 from sklearn.model_selection import StratifiedKFold
-from sklearn.metrics import accuracy_score, f1_score, classification_report
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, classification_report
 
 from .config import set_seed
 from .classifiers import build_centroids, predict_centroid, train_and_classify_knn
@@ -48,15 +48,21 @@ def _report_method(
     # Print classification report
     print(classification_report(all_true, all_pred, target_names=class_names, digits=4))
     
-    # Log to wandb
-    report_dict = classification_report(
-        all_true, all_pred, target_names=class_names, digits=4, output_dict=True
-    )
-    report_df = pd.DataFrame(report_dict).transpose().reset_index()
-    report_df = report_df.rename(columns={"index": "class"})
-    
+    # Final aggregated metrics (macro-averaged for multiclass)
+    final_accuracy = accuracy_score(all_true, all_pred)
+    final_f1 = f1_score(all_true, all_pred, average="macro")
+    final_precision = precision_score(all_true, all_pred, average="macro", zero_division=0)
+    final_recall = recall_score(all_true, all_pred, average="macro", zero_division=0)
+
+    # Log to wandb: final scalars separately, then report table and confusion matrix
     wandb.log({
-        f"{wandb_key}_report": wandb.Table(dataframe=report_df),
+        f"final_{wandb_key}_accuracy": final_accuracy,
+        f"final_{wandb_key}_f1": final_f1,
+        f"final_{wandb_key}_precision": final_precision,
+        f"final_{wandb_key}_recall": final_recall,
+        f"{wandb_key}_report": wandb.Table(dataframe=pd.DataFrame(
+            classification_report(all_true, all_pred, target_names=class_names, digits=4, output_dict=True)
+        ).transpose().reset_index().rename(columns={"index": "class"})),
         f"{wandb_key}_confusion": wandb.plot.confusion_matrix(
             probs=None,
             y_true=all_true,

@@ -15,7 +15,7 @@ import gc
 
 # Configuration
 PROCESSED_DATA_FILE = "data/processed_data_.jsonl"
-MODEL_NAME = "google-bert/bert-base-uncased"
+MODEL_NAME = "BAAI/bge-code-v1"
 OUTPUT_DIR = "fine_tuned_ballerina_coderank"
 BATCH_SIZE = 32
 NUM_EPOCHS = 3

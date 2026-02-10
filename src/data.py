@@ -104,21 +104,25 @@ def mine_hard_negatives(
     labels: List[int],
     embeddings: np.ndarray,
     num_hard_negatives: int = 3,
+    max_candidates: Optional[int] = None,
 ) -> Dict[int, List[int]]:
     """
     Mine hard negatives for each sample based on embedding similarity.
     
     Hard negatives are samples from different classes that are closest
-    in embedding space to the anchor.
+    in embedding space to the anchor. Returned list is ordered by
+    similarity (nearest / hardest first).
     
     Args:
         texts: List of text samples.
         labels: List of corresponding labels.
         embeddings: Pre-computed embeddings for all samples.
-        num_hard_negatives: Number of hard negatives to mine per sample.
+        num_hard_negatives: Number of hard negatives to return per sample (if max_candidates not set).
+        max_candidates: If set, return up to this many candidates per anchor (ordered by hardness),
+            so callers can pick "next nearest" when some are already used (e.g. one neg per class).
     
     Returns:
-        Dictionary mapping sample index to list of hard negative indices.
+        Dictionary mapping sample index to list of hard negative indices (nearest first).
     """
     n_samples = len(texts)
     labels_arr = np.array(labels)
@@ -132,6 +136,7 @@ def mine_hard_negatives(
     similarity_matrix = normalized_emb @ normalized_emb.T
     
     hard_negatives = {}
+    k_effective = max_candidates if max_candidates is not None else num_hard_negatives
     
     for idx in range(n_samples):
         anchor_label = labels_arr[idx]
@@ -147,14 +152,38 @@ def mine_hard_negatives(
         # Get similarities to samples from different classes
         sims = similarity_matrix[idx, different_class_indices]
         
-        # Get top-k most similar (hardest) negatives
-        k = min(num_hard_negatives, len(different_class_indices))
+        # Order by similarity descending (hardest first); take up to k_effective
+        k = min(k_effective, len(different_class_indices))
         top_k_local_indices = np.argsort(sims)[-k:][::-1]
         
         hard_negatives[idx] = different_class_indices[top_k_local_indices].tolist()
     
     return hard_negatives
 
+def mine_random_negatives(
+    texts: List[str],
+    labels: List[int],
+    num_random_negatives: int = 3,
+) -> Dict[int, List[int]]:
+    """
+    Mine random negatives for each sample based on embedding similarity.
+    """
+    random_negatives = {}
+    for idx in range(len(texts)):
+        random_negatives[idx] = random.sample(range(len(texts)), num_random_negatives)
+    return random_negatives
+
+def build_pairs_with_random_negatives(
+    texts: List[str],
+    labels: List[int],
+    max_pairs_per_class: Optional[int] = None,
+    num_random_negatives: int = 3,
+) -> List[InputExample]:
+    """
+    Build training pairs with random negative mining for contrastive learning.
+    """
+    random_negatives = mine_random_negatives(texts, labels, num_random_negatives)
+    return random_negatives
 
 def build_pairs_with_hard_negatives(
     texts: List[str],
@@ -317,33 +346,41 @@ def build_contrastive_pairs(
     
     # Generate negative pairs (different class, label=0.0)
     if use_hard_negatives and embeddings is not None:
-        # Use hard negatives
-        hard_negs = mine_hard_negatives(texts, labels, embeddings, num_hard_negatives)
-        for anchor_idx, neg_indices in hard_negs.items():
+        # Use hard negatives: each negative item appears in at most one pair per class.
+        # Mine more candidates per anchor so we can pick "next nearest" when nearest is already used.
+        max_candidates = 50
+        hard_negs = mine_hard_negatives(
+            texts, labels, embeddings,
+            num_hard_negatives=num_hard_negatives,
+            max_candidates=max_candidates,
+        )
+        for label, indices in label_to_indices.items():
+            used_negatives_this_class = set()
+            for anchor_idx in indices:
+                candidates = hard_negs.get(anchor_idx, [])
+                # Take up to num_hard_negatives that are not already used for this class
+                chosen = []
+                for neg_idx in candidates:
+                    if neg_idx not in used_negatives_this_class:
+                        chosen.append(neg_idx)
+                        if len(chosen) >= num_hard_negatives:
+                            break
+                for neg_idx in chosen:
+                    examples.append(InputExample(
+                        texts=[str(texts[anchor_idx]), str(texts[neg_idx])],
+                        label=0.0  # Dissimilar pair
+                    ))
+                    used_negatives_this_class.add(neg_idx)
+    else:
+        # Random negatives - sample similar number as positives
+        num_random_negatives = num_hard_negatives
+        random_negatives = mine_random_negatives(texts, labels, num_random_negatives)
+        for anchor_idx, neg_indices in random_negatives.items():
             for neg_idx in neg_indices:
                 examples.append(InputExample(
                     texts=[str(texts[anchor_idx]), str(texts[neg_idx])],
                     label=0.0  # Dissimilar pair
                 ))
-    else:
-        # Random negatives - sample similar number as positives
-        all_indices = list(range(len(texts)))
-        labels_arr = np.array(labels)
-        num_neg_pairs = len(examples)  # Match number of positive pairs
-        
-        neg_count = 0
-        attempts = 0
-        max_attempts = num_neg_pairs * 10
-        
-        while neg_count < num_neg_pairs and attempts < max_attempts:
-            i, j = random.sample(all_indices, 2)
-            if labels_arr[i] != labels_arr[j]:
-                examples.append(InputExample(
-                    texts=[str(texts[i]), str(texts[j])],
-                    label=0.0  # Dissimilar pair
-                ))
-                neg_count += 1
-            attempts += 1
     
     random.shuffle(examples)
     return examples
