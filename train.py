@@ -14,12 +14,16 @@ Supported loss functions:
 import os
 
 from src.data import load_and_preprocess_data, LossType
-from src.pipeline import run_5fold_cv
+from src.pipeline import run_5fold_cv, run_5fold_cv_no_finetuning
 
 
 # =============================================================================
 # Configuration
 # =============================================================================
+
+# If True: encode all samples with raw model (no training), then 5-fold CV with
+# KNN and Centroid on embeddings only. Fine-tuning pipeline is skipped.
+RUN_WITHOUT_FINETUNING = False
 
 # Loss function: "contrastive", "mnrl", or "triplet"
 LOSS_TYPE = "contrastive"  # Options: LossType.CONTRASTIVE, LossType.MNRL, LossType.TRIPLET
@@ -55,6 +59,19 @@ def main():
     
     # Suppress wandb output
     os.environ["WANDB_SILENT"] = "true"
+    
+    if RUN_WITHOUT_FINETUNING:
+        run_5fold_cv_no_finetuning(
+            texts=dataset["code_summary"],
+            labels=dataset["label_enc"],
+            class_names=list(label_encoder.classes_),
+            model_name=MODEL_NAME,
+            num_folds=5,
+            batch_size=BATCH_SIZE,
+            max_seq_length=MAX_SEQ_LENGTH,
+            seed=SEED,
+        )
+        return
     
     # Run training with configurable loss and hard negative mining
     run_5fold_cv(

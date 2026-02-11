@@ -11,22 +11,27 @@ from sklearn.metrics import accuracy_score, f1_score
 from .config import set_seed, clear_memory
 from .data import prepare_fold_data, LossType
 from .model import train_model, encode_in_batches
-from .classifiers import build_centroids, predict_centroid
+from .classifiers import build_centroids, predict_centroid, train_and_classify_knn
 from .io_utils import save_fold_embeddings, save_all_embeddings
-from .evaluation import evaluate_saved_embeddings_5fold
+from .evaluation import evaluate_saved_embeddings_5fold, _report_method
 
 
 def build_wandb_tags(config: dict) -> List[str]:
     """Build tags for wandb run based on configuration."""
     tags = []
     
+    # No-finetuning tag
+    if config.get("run_without_finetuning", False):
+        tags.append("no-finetuning")
+    
     # Model tag
     model_short = config["model_name"].split("/")[-1]
     tags.append(f"model:{model_short}")
     
-    # Loss function tag
-    loss_type = config.get("loss_type", "mnrl")
-    tags.append(f"loss:{loss_type}")
+    # Loss function tag (skip when no finetuning)
+    if not config.get("run_without_finetuning", False):
+        loss_type = config.get("loss_type", "mnrl")
+        tags.append(f"loss:{loss_type}")
     
     # Hard negative mining tag
     use_hn = config.get("use_hard_negatives", False)
@@ -48,14 +53,17 @@ def build_wandb_tags(config: dict) -> List[str]:
     return tags
 
 
-def init_wandb(model_name: str, config: dict) -> None:
+def init_wandb(model_name: str, config: dict, run_name_override: str = None) -> None:
     """Initialize Weights & Biases logging with tags."""
     tags = build_wandb_tags(config)
     
-    # Build run name: model-loss-hn_status-seq_length
-    loss_type = config.get("loss_type", "mnrl")
-    hn_status = "hn" if config.get("use_hard_negatives", False) else "no-hn"
-    run_name = f"{model_name.split('/')[-1]}-{loss_type}-{hn_status}-{config['max_seq_length']}"
+    if run_name_override is not None:
+        run_name = run_name_override
+    else:
+        # Build run name: model-loss-hn_status-seq_length
+        loss_type = config.get("loss_type", "mnrl")
+        hn_status = "hn" if config.get("use_hard_negatives", False) else "no-hn"
+        run_name = f"{model_name.split('/')[-1]}-{loss_type}-{hn_status}-{config['max_seq_length']}"
     
     wandb.init(
         project="code-classification-super-cons-learn[AI Patterns]",
@@ -63,6 +71,107 @@ def init_wandb(model_name: str, config: dict) -> None:
         config=config,
         tags=tags,
     )
+
+
+def run_5fold_cv_no_finetuning(
+    texts: Sequence[str],
+    labels: Sequence[int],
+    class_names: List[str],
+    model_name: str = "google-bert/bert-base-uncased",
+    num_folds: int = 5,
+    batch_size: int = 32,
+    max_seq_length: int = 256,
+    seed: int = 42,
+) -> None:
+    """
+    Encode all samples with the raw model (no training), then run 5-fold CV
+    training KNN and Centroid on 4 folds and testing on 1 fold. Log results to
+    console and wandb. Use when RUN_WITHOUT_FINETUNING is True.
+    """
+    from sentence_transformers import SentenceTransformer
+
+    set_seed(seed)
+    texts = np.array(list(texts), dtype=object)
+    labels = np.array(list(labels), dtype=int)
+
+    config = {
+        "run_without_finetuning": True,
+        "model_name": model_name,
+        "num_folds": num_folds,
+        "batch_size": batch_size,
+        "max_seq_length": max_seq_length,
+        "seed": seed,
+    }
+    run_name = f"no-ft-{model_name.split('/')[-1]}-{max_seq_length}"
+    init_wandb(model_name, config, run_name_override=run_name)
+
+    print(f"\n{'=' * 80}")
+    print("RUN WITHOUT FINETUNING: encoding all samples with raw model")
+    print(f"{'=' * 80}")
+    print(f"  Model: {model_name}")
+    print(f"  Samples: {len(texts)}, Folds: {num_folds}")
+
+    clear_memory()
+    model = SentenceTransformer(model_name, trust_remote_code=True)
+    model.max_seq_length = max_seq_length
+    model.eval()
+
+    embeddings = encode_in_batches(model, list(texts), batch_size=batch_size)
+    del model
+    clear_memory()
+
+    acc_centroid, f1_centroid = [], []
+    acc_knn, f1_knn = [], []
+    all_true, pred_centroid_all, pred_knn_all = [], [], []
+
+    skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=seed)
+    for fold, (train_idx, test_idx) in enumerate(skf.split(np.arange(len(labels)), labels), start=1):
+        X_train = embeddings[train_idx]
+        y_train = labels[train_idx]
+        X_test = embeddings[test_idx]
+        y_test = labels[test_idx]
+
+        centroids = build_centroids(X_train, y_train)
+        pred_c = predict_centroid(X_test, centroids)
+        acc_c = accuracy_score(y_test, pred_c)
+        f1_c = f1_score(y_test, pred_c, average="macro")
+        acc_centroid.append(acc_c)
+        f1_centroid.append(f1_c)
+        all_true.extend(y_test)
+        pred_centroid_all.extend(pred_c)
+
+        pred_k = train_and_classify_knn(X_train, y_train, X_test, y_test)
+        acc_k = accuracy_score(y_test, pred_k)
+        f1_k = f1_score(y_test, pred_k, average="macro")
+        acc_knn.append(acc_k)
+        f1_knn.append(f1_k)
+        pred_knn_all.extend(pred_k)
+
+        print(
+            f"No-FT fold {fold}: "
+            f"Centroid Acc {acc_c:.4f} F1 {f1_c:.4f} | "
+            f"KNN Acc {acc_k:.4f} F1 {f1_k:.4f}"
+        )
+        wandb.log({
+            f"no_ft_fold{fold}_centroid_acc": acc_c,
+            f"no_ft_fold{fold}_centroid_f1": f1_c,
+            f"no_ft_fold{fold}_knn_acc": acc_k,
+            f"no_ft_fold{fold}_knn_f1": f1_k,
+        })
+
+    _report_method(
+        "NO FINETUNING - CENTROID",
+        acc_centroid, f1_centroid,
+        all_true, pred_centroid_all,
+        class_names, "no_ft_centroid",
+    )
+    _report_method(
+        "NO FINETUNING - KNN",
+        acc_knn, f1_knn,
+        all_true, pred_knn_all,
+        class_names, "no_ft_knn",
+    )
+    wandb.finish()
 
 
 def run_5fold_cv(
