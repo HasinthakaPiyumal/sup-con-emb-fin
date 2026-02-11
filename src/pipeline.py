@@ -94,6 +94,12 @@ def run_5fold_cv_no_finetuning(
     texts = np.array(list(texts), dtype=object)
     labels = np.array(list(labels), dtype=int)
 
+    if len(labels) == 0:
+        raise ValueError(
+            "No samples in dataset (0 texts/labels). Need at least 1 sample for 5-fold CV. "
+            "Check that the data file exists, has rows, and preprocessing did not drop all rows."
+        )
+
     config = {
         "run_without_finetuning": True,
         "model_name": model_name,

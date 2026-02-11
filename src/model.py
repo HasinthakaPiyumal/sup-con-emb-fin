@@ -202,8 +202,12 @@ def encode_in_batches(
     Returns:
         Tensor of embeddings with shape (N, D).
     """
+    if not texts:
+        dim = model.get_sentence_embedding_dimension()
+        return torch.empty(0, dim, dtype=torch.float32)
+
     outputs = []
-    
+
     for i in range(0, len(texts), batch_size):
         batch_texts = texts[i:i + batch_size]
         embeddings = model.encode(

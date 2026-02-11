@@ -23,7 +23,7 @@ from src.pipeline import run_5fold_cv, run_5fold_cv_no_finetuning
 
 # If True: encode all samples with raw model (no training), then 5-fold CV with
 # KNN and Centroid on embeddings only. Fine-tuning pipeline is skipped.
-RUN_WITHOUT_FINETUNING = False
+RUN_WITHOUT_FINETUNING = True
 
 # Loss function: "contrastive", "mnrl", or "triplet"
 LOSS_TYPE = "contrastive"  # Options: LossType.CONTRASTIVE, LossType.MNRL, LossType.TRIPLET
@@ -36,7 +36,8 @@ HN_BASE_MODEL = "google-bert/bert-base-uncased"  # Fast model for mining
 
 # Model and training
 # MODEL_NAME = "BAAI/bge-reasoner-embed-qwen3-8b-0923"
-MODEL_NAME = "google-bert/bert-base-uncased"
+MODEL_NAME = "BAAI/bge-code-v1"
+# MODEL_NAME = "google-bert/bert-base-uncased"
 EPOCHS = 3
 BATCH_SIZE = 32
 LEARNING_RATE = 2e-5
@@ -46,13 +47,20 @@ MAX_SEQ_LENGTH = 768
 SEED = 42
 DENSE_DIM = 8
 
+# Minimum samples per label to keep (labels with fewer are dropped). Use 2 for small
+# datasets; for 5-fold CV each label ideally has at least 5 samples.
+MIN_SAMPLES_PER_LABEL = 20
+
 
 def main():
     """Main entry point for training."""
-    dataset_path = "./data/feb-10-2026-community-descriptions-concated.csv"
+    dataset_path = "./data/labeled_verified_data.csv"
+    # dataset_path = "./data/feb-10-2026-community-descriptions-concated.csv"
     
     try:
-        dataset, label_encoder = load_and_preprocess_data(dataset_path)
+        dataset, label_encoder = load_and_preprocess_data(
+            dataset_path, min_samples_per_label=MIN_SAMPLES_PER_LABEL
+        )
     except FileNotFoundError as e:
         print(f"Error: {e}")
         return
