@@ -39,7 +39,7 @@ HN_BASE_MODEL = "google-bert/bert-base-uncased"  # Fast model for mining
 MODEL_NAME = "BAAI/bge-code-v1"
 # MODEL_NAME = "google-bert/bert-base-uncased"
 EPOCHS = 3
-BATCH_SIZE = 32
+BATCH_SIZE = 128
 LEARNING_RATE = 2e-5
 WARMUP_STEPS = 10
 MAX_PAIRS_PER_CLASS = 80
@@ -49,13 +49,13 @@ DENSE_DIM = 8
 
 # Minimum samples per label to keep (labels with fewer are dropped). Use 2 for small
 # datasets; for 5-fold CV each label ideally has at least 5 samples.
-MIN_SAMPLES_PER_LABEL = 20
+MIN_SAMPLES_PER_LABEL = 120
 
 
 def main():
     """Main entry point for training."""
-    dataset_path = "./data/labeled_verified_data.csv"
-    # dataset_path = "./data/feb-10-2026-community-descriptions-concated.csv"
+    # dataset_path = "./data/labeled_verified_data.csv"
+    dataset_path = "./data/feb-10-2026-community-descriptions-concated.csv"
     
     try:
         dataset, label_encoder = load_and_preprocess_data(
