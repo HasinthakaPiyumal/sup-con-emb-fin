@@ -23,7 +23,7 @@ from src.pipeline import run_5fold_cv, run_5fold_cv_no_finetuning
 
 # If True: encode all samples with raw model (no training), then 5-fold CV with
 # KNN and Centroid on embeddings only. Fine-tuning pipeline is skipped.
-RUN_WITHOUT_FINETUNING = True
+RUN_WITHOUT_FINETUNING = False
 
 # Loss function: "contrastive", "mnrl", or "triplet"
 LOSS_TYPE = "contrastive"  # Options: LossType.CONTRASTIVE, LossType.MNRL, LossType.TRIPLET
@@ -35,8 +35,8 @@ NUM_HARD_NEGATIVES = 10
 HN_BASE_MODEL = "google-bert/bert-base-uncased"  # Fast model for mining
 
 # Model and training
-# MODEL_NAME = "BAAI/bge-reasoner-embed-qwen3-8b-0923"
-MODEL_NAME = "BAAI/bge-code-v1"
+MODEL_NAME = "BAAI/bge-reasoner-embed-qwen3-8b-0923"
+# MODEL_NAME = "BAAI/bge-code-v1"
 # MODEL_NAME = "google-bert/bert-base-uncased"
 EPOCHS = 3
 BATCH_SIZE = 128
