@@ -23,7 +23,7 @@ from src.pipeline import run_5fold_cv, run_5fold_cv_no_finetuning, train_full_da
 
 # If True: encode all samples with raw model (no training), then 5-fold CV with
 # KNN and Centroid on embeddings only. Fine-tuning pipeline is skipped.
-RUN_WITHOUT_FINETUNING = False
+RUN_WITHOUT_FINETUNING = True
 
 # Loss function: "contrastive", "mnrl", or "triplet"
 LOSS_TYPE = "contrastive"  # Options: LossType.CONTRASTIVE, LossType.MNRL, LossType.TRIPLET
@@ -51,9 +51,12 @@ DENSE_DIM = 8
 # datasets; for 5-fold CV each label ideally has at least 5 samples.
 MIN_SAMPLES_PER_LABEL = 120
 
-# After 5-fold CV: train on full dataset and push model to Hugging Face Hub.
-RUN_FULL_DATASET_AND_PUSH = True
-HUB_MODEL_ID = "hasinthakapiyumal/bge-code-v1-ai-pattern-tuned"  # e.g. "your-org/code-embedding-model"
+# After 5-fold CV: train on full dataset and optionally save/push model.
+RUN_FULL_DATASET_TRAINING = True  # Set to True to train on full dataset after 5-fold CV
+SAVE_MODEL_LOCALLY = True  # Save trained model locally
+LOCAL_MODEL_DIR = "saved_models"  # Directory to save models locally
+PUSH_TO_HUB = False  # Set to True to push model to Hugging Face Hub (requires HUB_MODEL_ID)
+HUB_MODEL_ID = "hasinthakapiyumal/bge-code-v1-ai-pattern-tuned"  # e.g. "your-org/code-embedding-model" (required if PUSH_TO_HUB=True)
 HF_TOKEN = ""  # Optional; set or use `huggingface-cli login`
 
 
@@ -84,37 +87,36 @@ def main():
             max_seq_length=MAX_SEQ_LENGTH,
             seed=SEED,
         )
-        return
-    
-    # Run training with configurable loss and hard negative mining
-    run_5fold_cv(
-        texts=dataset["code_summary"],
-        labels=dataset["label_enc"],
-        class_names=list(label_encoder.classes_),
-        model_name=MODEL_NAME,
-        epochs=EPOCHS,
-        batch_size=BATCH_SIZE,
-        lr=LEARNING_RATE,
-        warmup_steps=WARMUP_STEPS,
-        max_pairs_per_class=MAX_PAIRS_PER_CLASS,
-        max_seq_length=MAX_SEQ_LENGTH,
-        seed=SEED,
-        dense_dim=DENSE_DIM,
-        # Loss function settings
-        loss_type=LOSS_TYPE,
-        loss_margin=LOSS_MARGIN,
-        # Hard negative mining settings
-        use_hard_negatives=USE_HARD_NEGATIVES,
-        num_hard_negatives=NUM_HARD_NEGATIVES,
-        hn_base_model=HN_BASE_MODEL,
-        # OOF CSV metadata (label, file, description + embeddings)
-        files=dataset["file"].tolist() if "file" in dataset.columns else None,
-        descriptions=dataset["code_summary"].tolist(),
-    )
+    else:
+        # Run training with configurable loss and hard negative mining
+        run_5fold_cv(
+            texts=dataset["code_summary"],
+            labels=dataset["label_enc"],
+            class_names=list(label_encoder.classes_),
+            model_name=MODEL_NAME,
+            epochs=EPOCHS,
+            batch_size=BATCH_SIZE,
+            lr=LEARNING_RATE,
+            warmup_steps=WARMUP_STEPS,
+            max_pairs_per_class=MAX_PAIRS_PER_CLASS,
+            max_seq_length=MAX_SEQ_LENGTH,
+            seed=SEED,
+            dense_dim=DENSE_DIM,
+            # Loss function settings
+            loss_type=LOSS_TYPE,
+            loss_margin=LOSS_MARGIN,
+            # Hard negative mining settings
+            use_hard_negatives=USE_HARD_NEGATIVES,
+            num_hard_negatives=NUM_HARD_NEGATIVES,
+            hn_base_model=HN_BASE_MODEL,
+            # OOF CSV metadata (label, file, description + embeddings)
+            files=dataset["file"].tolist() if "file" in dataset.columns else None,
+            descriptions=dataset["code_summary"].tolist(),
+        )
 
-    # Optional: train on full dataset and push to Hugging Face Hub
-    if RUN_FULL_DATASET_AND_PUSH and HUB_MODEL_ID:
-        train_full_dataset_and_push_to_hub(
+    # Optional: train on full dataset and save/push model
+    if RUN_FULL_DATASET_TRAINING:
+        saved_path = train_full_dataset_and_push_to_hub(
             texts=dataset["code_summary"],
             labels=dataset["label_enc"],
             model_name=MODEL_NAME,
@@ -131,10 +133,16 @@ def main():
             use_hard_negatives=USE_HARD_NEGATIVES,
             num_hard_negatives=NUM_HARD_NEGATIVES,
             hn_base_model=HN_BASE_MODEL,
-            hub_model_id=HUB_MODEL_ID,
-            push_to_hub=True,
+            hub_model_id=HUB_MODEL_ID if PUSH_TO_HUB else None,
+            push_to_hub=PUSH_TO_HUB,
             hf_token=HF_TOKEN or None,
+            save_local=SAVE_MODEL_LOCALLY,
+            local_save_dir=LOCAL_MODEL_DIR,
         )
+        print(f"\nModel saved at: {saved_path}")
+        if SAVE_MODEL_LOCALLY and not PUSH_TO_HUB:
+            print(f"\nTo upload later, run:")
+            print(f"  python upload_model.py --model_path {saved_path} --hub_id {HUB_MODEL_ID}")
 
 
 if __name__ == "__main__":

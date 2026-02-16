@@ -375,15 +375,17 @@ def train_full_dataset_and_push_to_hub(
     num_hard_negatives: int = 3,
     hn_base_model: str = "all-MiniLM-L6-v2",
     hub_model_id: Optional[str] = None,
-    push_to_hub: bool = True,
+    push_to_hub: bool = False,
     hf_token: Optional[str] = None,
-) -> None:
+    save_local: bool = True,
+    local_save_dir: str = "saved_models",
+) -> str:
     """
-    Train contrastive embedding model on the full dataset, then push to Hugging Face Hub.
+    Train contrastive embedding model on the full dataset, optionally save locally and push to Hugging Face Hub.
 
     Uses the same loss and hard-negative settings as the 5-fold pipeline. All samples
     are used for training (no train/test split). Call this after run_5fold_cv() when
-    you want a single model trained on all data and saved to the Hub.
+    you want a single model trained on all data.
 
     Args:
         texts: Input text samples (full dataset).
@@ -405,6 +407,11 @@ def train_full_dataset_and_push_to_hub(
         hub_model_id: Hugging Face Hub repo id (e.g. "username/repo-name"). Required if push_to_hub.
         push_to_hub: Whether to push the trained model to the Hub.
         hf_token: Optional Hugging Face token for login (else use huggingface-cli login).
+        save_local: Whether to save the model locally.
+        local_save_dir: Directory to save the model locally.
+
+    Returns:
+        Path to saved model (local path if saved locally, hub_model_id if pushed to hub).
     """
     if isinstance(loss_type, str):
         loss_type = LossType(loss_type)
@@ -443,6 +450,21 @@ def train_full_dataset_and_push_to_hub(
         loss_margin=loss_margin,
     )
 
+    saved_path = None
+
+    # Save locally if requested
+    if save_local:
+        import os
+        os.makedirs(local_save_dir, exist_ok=True)
+        # Create a descriptive model name based on config
+        model_suffix = f"{loss_type.value}-hn{num_hard_negatives if use_hard_negatives else 0}-ep{epochs}"
+        local_model_path = os.path.join(local_save_dir, f"full-dataset-{model_suffix}")
+        print(f"Saving model locally to: {local_model_path}")
+        model.save(local_model_path)
+        saved_path = local_model_path
+        print(f"Model saved locally at: {local_model_path}")
+
+    # Push to Hub if requested
     if push_to_hub and hub_model_id:
         if hf_token:
             try:
@@ -450,11 +472,53 @@ def train_full_dataset_and_push_to_hub(
                 login(token=hf_token)
             except Exception as e:
                 print(f"Warning: HF login with token failed: {e}")
+        
         print(f"Pushing model to Hugging Face Hub: {hub_model_id}")
-        model.push_to_hub(hub_model_id)
-        print(f"Done. Model available at https://huggingface.co/{hub_model_id}")
-    else:
-        print("Push to Hub disabled or hub_model_id not set; model not uploaded.")
+        try:
+            # Use create_repo with exist_ok=True to handle existing repos
+            from huggingface_hub import HfApi
+            api = HfApi()
+            api.create_repo(repo_id=hub_model_id, exist_ok=True, repo_type="model")
+            
+            # push_to_hub internally calls create_repo without exist_ok, so catch 409 errors
+            try:
+                model.push_to_hub(hub_model_id)
+                print(f"Done. Model available at https://huggingface.co/{hub_model_id}")
+            except Exception as push_error:
+                error_str = str(push_error)
+                # If repo already exists (409), use upload_folder directly
+                if "409" in error_str or "already created" in error_str.lower() or "Conflict" in error_str:
+                    print("Repository already exists. Uploading files directly...")
+                    if save_local and saved_path:
+                        # Upload from local path
+                        api.upload_folder(
+                            folder_path=saved_path,
+                            repo_id=hub_model_id,
+                            repo_type="model",
+                            commit_message=f"Upload fine-tuned model: {loss_type.value}",
+                        )
+                    else:
+                        # Save temporarily to upload
+                        import tempfile
+                        with tempfile.TemporaryDirectory() as tmpdir:
+                            model.save(tmpdir)
+                            api.upload_folder(
+                                folder_path=tmpdir,
+                                repo_id=hub_model_id,
+                                repo_type="model",
+                                commit_message=f"Upload fine-tuned model: {loss_type.value}",
+                            )
+                    print(f"Done. Model available at https://huggingface.co/{hub_model_id}")
+                else:
+                    raise
+            
+            saved_path = hub_model_id
+        except Exception as e:
+            print(f"Error pushing to Hub: {e}")
+            print("Model was saved locally (if enabled) but not uploaded to Hub.")
+    elif push_to_hub:
+        print("Warning: push_to_hub=True but hub_model_id not set; skipping Hub upload.")
 
     del model
     clear_memory()
+    return saved_path or "Model not saved"
