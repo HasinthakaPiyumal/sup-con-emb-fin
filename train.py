@@ -14,7 +14,7 @@ Supported loss functions:
 import os
 
 from src.data import load_and_preprocess_data, LossType
-from src.pipeline import run_5fold_cv, run_5fold_cv_no_finetuning
+from src.pipeline import run_5fold_cv, run_5fold_cv_no_finetuning, train_full_dataset_and_push_to_hub
 
 
 # =============================================================================
@@ -35,8 +35,8 @@ NUM_HARD_NEGATIVES = 10
 HN_BASE_MODEL = "google-bert/bert-base-uncased"  # Fast model for mining
 
 # Model and training
-MODEL_NAME = "BAAI/bge-reasoner-embed-qwen3-8b-0923"
-# MODEL_NAME = "BAAI/bge-code-v1"
+# MODEL_NAME = "BAAI/bge-reasoner-embed-qwen3-8b-0923"
+MODEL_NAME = "BAAI/bge-code-v1"
 # MODEL_NAME = "google-bert/bert-base-uncased"
 EPOCHS = 3
 BATCH_SIZE = 128
@@ -50,6 +50,11 @@ DENSE_DIM = 8
 # Minimum samples per label to keep (labels with fewer are dropped). Use 2 for small
 # datasets; for 5-fold CV each label ideally has at least 5 samples.
 MIN_SAMPLES_PER_LABEL = 120
+
+# After 5-fold CV: train on full dataset and push model to Hugging Face Hub.
+RUN_FULL_DATASET_AND_PUSH = True
+HUB_MODEL_ID = "hasinthakapiyumal/bge-code-v1-ai-pattern-tuned"  # e.g. "your-org/code-embedding-model"
+HF_TOKEN = ""  # Optional; set or use `huggingface-cli login`
 
 
 def main():
@@ -102,7 +107,34 @@ def main():
         use_hard_negatives=USE_HARD_NEGATIVES,
         num_hard_negatives=NUM_HARD_NEGATIVES,
         hn_base_model=HN_BASE_MODEL,
+        # OOF CSV metadata (label, file, description + embeddings)
+        files=dataset["file"].tolist() if "file" in dataset.columns else None,
+        descriptions=dataset["code_summary"].tolist(),
     )
+
+    # Optional: train on full dataset and push to Hugging Face Hub
+    if RUN_FULL_DATASET_AND_PUSH and HUB_MODEL_ID:
+        train_full_dataset_and_push_to_hub(
+            texts=dataset["code_summary"],
+            labels=dataset["label_enc"],
+            model_name=MODEL_NAME,
+            max_seq_length=MAX_SEQ_LENGTH,
+            batch_size=BATCH_SIZE,
+            epochs=EPOCHS,
+            lr=LEARNING_RATE,
+            warmup_steps=WARMUP_STEPS,
+            max_pairs_per_class=MAX_PAIRS_PER_CLASS,
+            seed=SEED,
+            dense_dim=DENSE_DIM,
+            loss_type=LOSS_TYPE,
+            loss_margin=LOSS_MARGIN,
+            use_hard_negatives=USE_HARD_NEGATIVES,
+            num_hard_negatives=NUM_HARD_NEGATIVES,
+            hn_base_model=HN_BASE_MODEL,
+            hub_model_id=HUB_MODEL_ID,
+            push_to_hub=True,
+            hf_token=HF_TOKEN or None,
+        )
 
 
 if __name__ == "__main__":

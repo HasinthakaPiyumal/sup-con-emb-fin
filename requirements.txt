@@ -10,8 +10,8 @@ numpy
 pandas
 scikit-learn
 sentence-transformers
-# BAAI/bge-code-v1 custom tokenizer needs transformers.models.qwen2.tokenization_qwen2_fast (removed in v5)
-transformers>=4.44,<5
+# BAAI/bge-code-v1 custom tokenizer needs tokenization_qwen2_fast (removed in transformers 5.x)
+transformers>=4.37,<5
 einops
 datasets
 accelerate

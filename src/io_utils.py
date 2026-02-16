@@ -1,7 +1,7 @@
 """I/O utilities for saving and loading embeddings."""
 
 import os
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -18,28 +18,39 @@ def _to_numpy(x: Union[torch.Tensor, np.ndarray]) -> np.ndarray:
 def save_fold_embeddings(
     fold: int,
     y_test: List[int],
-    test_emb: Union[torch.Tensor, np.ndarray]
+    test_emb: Union[torch.Tensor, np.ndarray],
+    files: Optional[Sequence[str]] = None,
+    descriptions: Optional[Sequence[str]] = None,
 ) -> pd.DataFrame:
     """
     Create a DataFrame with fold metadata and embeddings.
-    
+
     Args:
         fold: Fold number.
         y_test: Test labels.
         test_emb: Test embeddings.
-    
+        files: Optional file identifiers (one per test sample). When provided,
+            added as column "file".
+        descriptions: Optional descriptions (e.g. code_summary) per test sample.
+            When provided, added as column "description".
+
     Returns:
-        DataFrame with fold, label, and embedding columns.
+        DataFrame with fold, label, optional file/description, and embedding columns.
     """
     emb = _to_numpy(test_emb)
-    
+
     # Create metadata columns
-    meta = pd.DataFrame({"fold": fold, "label": y_test})
-    
+    meta_dict = {"fold": fold, "label": y_test}
+    if files is not None:
+        meta_dict["file"] = list(files)
+    if descriptions is not None:
+        meta_dict["description"] = list(descriptions)
+    meta = pd.DataFrame(meta_dict)
+
     # Create embedding columns
     emb_columns = [f"emb_{i}" for i in range(emb.shape[1])]
     features = pd.DataFrame(emb, columns=emb_columns)
-    
+
     return pd.concat([meta, features], axis=1)
 
 

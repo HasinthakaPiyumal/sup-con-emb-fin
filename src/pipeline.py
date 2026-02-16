@@ -1,7 +1,7 @@
 """Main training pipeline with cross-validation."""
 
 import os
-from typing import List, Sequence, Union
+from typing import List, Optional, Sequence, Union
 
 import numpy as np
 import wandb
@@ -202,6 +202,9 @@ def run_5fold_cv(
     use_hard_negatives: bool = False,
     num_hard_negatives: int = 3,
     hn_base_model: str = "all-MiniLM-L6-v2",
+    # Optional metadata for OOF CSV (must align with texts/labels)
+    files: Optional[Sequence[str]] = None,
+    descriptions: Optional[Sequence[str]] = None,
 ) -> None:
     """
     Run two-phase 5-fold cross-validation.
@@ -229,6 +232,8 @@ def run_5fold_cv(
         use_hard_negatives: Whether to use hard negative mining.
         num_hard_negatives: Number of hard negatives per sample.
         hn_base_model: Base model for hard negative mining embeddings.
+        files: Optional file identifiers aligned with texts (for OOF CSV).
+        descriptions: Optional descriptions (e.g. code_summary) aligned with texts (for OOF CSV).
     """
     # Convert string loss_type to enum if needed
     if isinstance(loss_type, str):
@@ -269,7 +274,9 @@ def run_5fold_cv(
     # Convert to arrays
     texts = np.array(list(texts), dtype=object)
     labels = np.array(list(labels), dtype=int)
-    
+    files_arr = np.array(list(files), dtype=object) if files is not None else None
+    descriptions_arr = np.array(list(descriptions), dtype=object) if descriptions is not None else None
+
     skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=seed)
     os.makedirs(save_dir, exist_ok=True)
     
@@ -326,8 +333,13 @@ def run_5fold_cv(
             f"phase1_fold{fold}_centroid_f1": f1_c
         })
         
-        # Save fold embeddings
-        all_fold_data.append(save_fold_embeddings(fold, y_test, test_emb))
+        # Save fold embeddings (with optional file/description for OOF CSV)
+        test_files = files_arr[test_idx] if files_arr is not None else None
+        test_descriptions = descriptions_arr[test_idx] if descriptions_arr is not None else None
+        all_fold_data.append(save_fold_embeddings(
+            fold, y_test, test_emb,
+            files=test_files, descriptions=test_descriptions,
+        ))
         
         # Cleanup
         del train_emb, centroids, pred_c
@@ -341,5 +353,108 @@ def run_5fold_cv(
     
     # Phase 2: Evaluate with different classifiers
     evaluate_saved_embeddings_5fold(save_dir, class_names, num_folds=num_folds, seed=seed)
-    
+
     wandb.finish()
+
+
+def train_full_dataset_and_push_to_hub(
+    texts: Sequence[str],
+    labels: Sequence[int],
+    model_name: str,
+    max_seq_length: int,
+    batch_size: int,
+    epochs: int,
+    lr: float,
+    warmup_steps: int,
+    max_pairs_per_class: int,
+    seed: int,
+    dense_dim: int = 8,
+    loss_type: Union[LossType, str] = LossType.MNRL,
+    loss_margin: float = 0.5,
+    use_hard_negatives: bool = False,
+    num_hard_negatives: int = 3,
+    hn_base_model: str = "all-MiniLM-L6-v2",
+    hub_model_id: Optional[str] = None,
+    push_to_hub: bool = True,
+    hf_token: Optional[str] = None,
+) -> None:
+    """
+    Train contrastive embedding model on the full dataset, then push to Hugging Face Hub.
+
+    Uses the same loss and hard-negative settings as the 5-fold pipeline. All samples
+    are used for training (no train/test split). Call this after run_5fold_cv() when
+    you want a single model trained on all data and saved to the Hub.
+
+    Args:
+        texts: Input text samples (full dataset).
+        labels: Encoded integer labels.
+        model_name: HuggingFace model identifier.
+        max_seq_length: Maximum token sequence length.
+        batch_size: Training batch size.
+        epochs: Training epochs.
+        lr: Learning rate.
+        warmup_steps: LR warmup steps.
+        max_pairs_per_class: Maximum contrastive pairs per class.
+        seed: Random seed.
+        dense_dim: Output dimension for projection head.
+        loss_type: Loss function type.
+        loss_margin: Margin for contrastive/triplet loss.
+        use_hard_negatives: Whether to use hard negative mining.
+        num_hard_negatives: Number of hard negatives per sample.
+        hn_base_model: Base model for hard negative mining.
+        hub_model_id: Hugging Face Hub repo id (e.g. "username/repo-name"). Required if push_to_hub.
+        push_to_hub: Whether to push the trained model to the Hub.
+        hf_token: Optional Hugging Face token for login (else use huggingface-cli login).
+    """
+    if isinstance(loss_type, str):
+        loss_type = LossType(loss_type)
+    set_seed(seed)
+
+    texts_arr = np.array(list(texts), dtype=object)
+    labels_arr = np.array(list(labels), dtype=int)
+    n = len(texts_arr)
+    train_idx = np.arange(n)
+    test_idx = np.array([], dtype=np.int64)
+
+    print(f"\n{'=' * 80}")
+    print("FULL-DATASET CONTRASTIVE TRAINING")
+    print(f"{'=' * 80}")
+    print(f"  Samples: {n}, Loss: {loss_type.value}")
+
+    clear_memory()
+    prep = prepare_fold_data(
+        texts_arr, labels_arr, train_idx, test_idx, max_pairs_per_class,
+        loss_type=loss_type,
+        use_hard_negatives=use_hard_negatives,
+        num_hard_negatives=num_hard_negatives,
+        hn_base_model=hn_base_model,
+    )
+    if prep[0] is None:
+        print("Full-dataset training skipped: not enough pairs.")
+        return
+    train_examples, _, _, _, _ = prep
+    print(f"  Generated {len(train_examples)} training examples")
+
+    model = train_model(
+        model_name, max_seq_length, train_examples,
+        batch_size, epochs, warmup_steps, lr,
+        dense_dim=dense_dim,
+        loss_type=loss_type,
+        loss_margin=loss_margin,
+    )
+
+    if push_to_hub and hub_model_id:
+        if hf_token:
+            try:
+                from huggingface_hub import login
+                login(token=hf_token)
+            except Exception as e:
+                print(f"Warning: HF login with token failed: {e}")
+        print(f"Pushing model to Hugging Face Hub: {hub_model_id}")
+        model.push_to_hub(hub_model_id)
+        print(f"Done. Model available at https://huggingface.co/{hub_model_id}")
+    else:
+        print("Push to Hub disabled or hub_model_id not set; model not uploaded.")
+
+    del model
+    clear_memory()

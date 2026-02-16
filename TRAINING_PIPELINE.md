@@ -12,6 +12,8 @@ This document describes the contrastive learning training pipeline for code clas
 6. [Loss Functions](#loss-functions)
 7. [Module Reference](#module-reference)
 8. [Wandb Logging](#wandb-logging)
+9. [Out-of-fold embeddings CSV](#out-of-fold-embeddings-csv)
+10. [Full-dataset training and Hugging Face Hub](#full-dataset-training-and-hugging-face-hub)
 
 ---
 
@@ -85,6 +87,8 @@ flowchart TB
    - Evaluate with centroid classifier (Phase 1 quick check)
    - Save test embeddings
 4. **Phase 2 Evaluation**: Re-evaluate all saved embeddings with both Centroid and KNN classifiers
+5. **OOF CSV**: All out-of-fold embeddings are written to one CSV (see [Out-of-fold embeddings CSV](#out-of-fold-embeddings-csv))
+6. **Optional**: If enabled, train on the full dataset and push the model to the Hugging Face Hub (see [Full-dataset training and Hugging Face Hub](#full-dataset-training-and-hugging-face-hub))
 
 ---
 
@@ -330,7 +334,7 @@ losses.TripletLoss(model=model, triplet_margin=0.5)
 | Module | Purpose | Key Functions |
 |--------|---------|---------------|
 | `train.py` | Entry point and configuration | `main()` |
-| `src/pipeline.py` | Training orchestration | `run_5fold_cv()`, `init_wandb()` |
+| `src/pipeline.py` | Training orchestration | `run_5fold_cv()`, `train_full_dataset_and_push_to_hub()`, `init_wandb()` |
 | `src/data.py` | Data loading and pair generation | `load_and_preprocess_data()`, `prepare_fold_data()`, `generate_training_examples()` |
 | `src/model.py` | Model training and inference | `train_model()`, `get_loss_function()`, `encode_in_batches()` |
 
@@ -340,7 +344,7 @@ losses.TripletLoss(model=model, triplet_margin=0.5)
 |--------|---------|---------------|
 | `src/classifiers.py` | Embedding-space classifiers | `build_centroids()`, `predict_centroid()`, `train_and_classify_knn()` |
 | `src/evaluation.py` | Metrics and reporting | `evaluate_saved_embeddings_5fold()` |
-| `src/io_utils.py` | Embedding I/O | `save_fold_embeddings()`, `load_saved_embeddings()` |
+| `src/io_utils.py` | Embedding I/O | `save_fold_embeddings()`, `save_all_embeddings()`, `load_saved_embeddings()` |
 | `src/config.py` | Utilities | `set_seed()`, `clear_memory()` |
 
 ### Module Dependency Graph
@@ -423,3 +427,45 @@ USE_HARD_NEGATIVES = True    # Toggle hard negative mining
 MODEL_NAME = "all-MiniLM-L6-v2"  # Use smaller model for testing
 EPOCHS = 1                   # Reduce for quick tests
 ```
+
+---
+
+## Out-of-fold embeddings CSV
+
+After 5-fold CV, all out-of-fold (test) embeddings from each fold are collected and saved to a single CSV in `save_dir` (default: `saved_test_embeddings/all_folds_test_embeddings.csv`).
+
+### CSV columns
+
+| Column       | Description |
+|-------------|-------------|
+| `fold`      | Fold number (1–5) in which this sample was the test set |
+| `label`     | Encoded integer label |
+| `file`      | File identifier (if the dataset has a `file` column and it is passed to `run_5fold_cv`) |
+| `description` | Text description (e.g. `code_summary`), one per row; passed as `descriptions` to `run_5fold_cv` |
+| `emb_0` … `emb_{d-1}` | Embedding dimensions |
+
+When `files` and `descriptions` are passed from `train.py` (e.g. `dataset["file"]` and `dataset["code_summary"]`), they are aligned with the test set for each fold and written into this CSV so every OOF row has label, file, description, and embeddings in one place.
+
+---
+
+## Full-dataset training and Hugging Face Hub
+
+After the 5-fold run (and after the OOF CSV is written), you can optionally train one more model on the **full** (filtered) dataset and push it to the Hugging Face Hub.
+
+### Configuration in `train.py`
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `RUN_FULL_DATASET_AND_PUSH` | bool | `False` | If `True`, after 5-fold CV run contrastive training on all data and push the model to the Hub |
+| `HUB_MODEL_ID` | str | `"username/repo-name"` | Hugging Face repo id (e.g. `your-org/code-embedding-model`). Must be set to a real repo when pushing |
+| `HF_TOKEN` | str | `""` | Optional. Hugging Face token for programmatic login; if empty, use `huggingface-cli login` |
+
+### Behavior
+
+- Uses the same loss, margin, hard-negative settings, and training hyperparameters as the 5-fold run.
+- Builds training pairs/triplets on the entire dataset (no train/test split), then runs `train_model()` once.
+- If `push_to_hub` is True and `hub_model_id` is set, the trained model is uploaded via `model.push_to_hub(hub_model_id)`.
+
+### Authentication
+
+Pushing to the Hub requires authentication: either run `huggingface-cli login` or set `HF_TOKEN` in `train.py` (or pass `hf_token` to `train_full_dataset_and_push_to_hub()`). The model will be available at `https://huggingface.co/<HUB_MODEL_ID>`.
