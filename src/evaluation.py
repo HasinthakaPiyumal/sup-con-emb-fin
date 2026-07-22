@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import torch
 import wandb
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, StratifiedGroupKFold
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, classification_report
 
 from .config import set_seed
@@ -90,14 +90,19 @@ def evaluate_saved_embeddings_5fold(
         num_folds: Number of CV folds.
         seed: Random seed for reproducibility.
     """
-    X, y = load_saved_embeddings(save_dir)
+    X, y, files = load_saved_embeddings(save_dir)
     
     if X is None:
         print(f"Phase 2 skipped: no embeddings in {save_dir}")
         return
     
     set_seed(seed)
-    skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=seed)
+    if files is not None:
+        sgkf = StratifiedGroupKFold(n_splits=num_folds, shuffle=True, random_state=seed)
+        split_iter = sgkf.split(X, y, groups=files)
+    else:
+        skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=seed)
+        split_iter = skf.split(X, y)
     
     # Metrics storage
     acc_centroid, f1_centroid = [], []
@@ -105,7 +110,7 @@ def evaluate_saved_embeddings_5fold(
     all_true = []
     pred_centroid_all, pred_knn_all = [], []
     
-    for fold, (train_idx, test_idx) in enumerate(skf.split(X, y), start=1):
+    for fold, (train_idx, test_idx) in enumerate(split_iter, start=1):
         X_train, y_train = X[train_idx], y[train_idx]
         X_test, y_test = X[test_idx], y[test_idx]
         

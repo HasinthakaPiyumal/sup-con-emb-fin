@@ -52,7 +52,7 @@ DENSE_DIM = 8
 MIN_SAMPLES_PER_LABEL = 120
 
 # After 5-fold CV: train on full dataset and optionally save/push model.
-RUN_FULL_DATASET_TRAINING = True  # Set to True to train on full dataset after 5-fold CV
+RUN_FULL_DATASET_TRAINING = False  # Set to True to train on full dataset after 5-fold CV
 SAVE_MODEL_LOCALLY = True  # Save trained model locally
 LOCAL_MODEL_DIR = "saved_models"  # Directory to save models locally
 PUSH_TO_HUB = False  # Set to True to push model to Hugging Face Hub (requires HUB_MODEL_ID)
@@ -86,6 +86,7 @@ def main():
             batch_size=BATCH_SIZE,
             max_seq_length=MAX_SEQ_LENGTH,
             seed=SEED,
+            files=dataset["file"].tolist() if "file" in dataset.columns else None,
         )
     else:
         # Run training with configurable loss and hard negative mining

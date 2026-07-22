@@ -56,7 +56,7 @@ def save_fold_embeddings(
 
 def load_saved_embeddings(
     save_dir: str
-) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
     """
     Load previously saved embeddings from disk.
     
@@ -64,12 +64,12 @@ def load_saved_embeddings(
         save_dir: Directory containing saved embeddings.
     
     Returns:
-        Tuple of (embeddings, labels) or (None, None) if not found.
+        Tuple of (embeddings, labels, files) or (None, None, None) if not found.
     """
     path = os.path.join(save_dir, "all_folds_test_embeddings.csv")
     
     if not os.path.exists(path):
-        return None, None
+        return None, None, None
     
     df = pd.read_csv(path)
     
@@ -77,8 +77,9 @@ def load_saved_embeddings(
     emb_cols = [c for c in df.columns if c.startswith("emb_")]
     embeddings = df[emb_cols].values.astype(np.float32)
     labels = df["label"].values.astype(int)
+    files = df["file"].values if "file" in df.columns else None
     
-    return embeddings, labels
+    return embeddings, labels, files
 
 
 def save_all_embeddings(

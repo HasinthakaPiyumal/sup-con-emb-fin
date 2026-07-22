@@ -5,7 +5,7 @@ from typing import List, Optional, Sequence, Union
 
 import numpy as np
 import wandb
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, StratifiedGroupKFold
 from sklearn.metrics import accuracy_score, f1_score
 
 from .config import set_seed, clear_memory
@@ -82,6 +82,7 @@ def run_5fold_cv_no_finetuning(
     batch_size: int = 32,
     max_seq_length: int = 256,
     seed: int = 42,
+    files: Optional[Sequence[str]] = None,
 ) -> None:
     """
     Encode all samples with the raw model (no training), then run 5-fold CV
@@ -93,6 +94,7 @@ def run_5fold_cv_no_finetuning(
     set_seed(seed)
     texts = np.array(list(texts), dtype=object)
     labels = np.array(list(labels), dtype=int)
+    files_arr = np.array(list(files), dtype=object) if files is not None else None
 
     if len(labels) == 0:
         raise ValueError(
@@ -116,6 +118,8 @@ def run_5fold_cv_no_finetuning(
     print(f"{'=' * 80}")
     print(f"  Model: {model_name}")
     print(f"  Samples: {len(texts)}, Folds: {num_folds}")
+    if files_arr is not None:
+        print(f"  Grouped by unique files: {len(np.unique(files_arr))}")
 
     clear_memory()
     model = SentenceTransformer(model_name, trust_remote_code=True)
@@ -130,8 +134,14 @@ def run_5fold_cv_no_finetuning(
     acc_knn, f1_knn = [], []
     all_true, pred_centroid_all, pred_knn_all = [], [], []
 
-    skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=seed)
-    for fold, (train_idx, test_idx) in enumerate(skf.split(np.arange(len(labels)), labels), start=1):
+    if files_arr is not None:
+        sgkf = StratifiedGroupKFold(n_splits=num_folds, shuffle=True, random_state=seed)
+        split_iter = sgkf.split(embeddings, labels, groups=files_arr)
+    else:
+        skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=seed)
+        split_iter = skf.split(embeddings, labels)
+
+    for fold, (train_idx, test_idx) in enumerate(split_iter, start=1):
         X_train = embeddings[train_idx]
         y_train = labels[train_idx]
         X_test = embeddings[test_idx]
@@ -275,15 +285,20 @@ def run_5fold_cv(
     texts = np.array(list(texts), dtype=object)
     labels = np.array(list(labels), dtype=int)
     files_arr = np.array(list(files), dtype=object) if files is not None else None
-    descriptions_arr = np.array(list(descriptions), dtype=object) if descriptions is not None else None
+    if files_arr is not None:
+        print(f"  Grouped CV by unique files: {len(np.unique(files_arr))}")
+        sgkf = StratifiedGroupKFold(n_splits=num_folds, shuffle=True, random_state=seed)
+        split_iter = sgkf.split(texts, labels, groups=files_arr)
+    else:
+        skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=seed)
+        split_iter = skf.split(texts, labels)
 
-    skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=seed)
     os.makedirs(save_dir, exist_ok=True)
     
     all_fold_data = []
     
     # Phase 1: Train and generate embeddings
-    for fold, (train_idx, test_idx) in enumerate(skf.split(texts, labels), start=1):
+    for fold, (train_idx, test_idx) in enumerate(split_iter, start=1):
         print(f"\n{'=' * 80}")
         print(f"PHASE 1 FOLD {fold}/{num_folds}")
         print(f"{'=' * 80}")
