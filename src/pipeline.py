@@ -285,6 +285,7 @@ def run_5fold_cv(
     texts = np.array(list(texts), dtype=object)
     labels = np.array(list(labels), dtype=int)
     files_arr = np.array(list(files), dtype=object) if files is not None else None
+    descriptions_arr = np.array(list(descriptions), dtype=object) if descriptions is not None else None
     if files_arr is not None:
         print(f"  Grouped CV by unique files: {len(np.unique(files_arr))}")
         sgkf = StratifiedGroupKFold(n_splits=num_folds, shuffle=True, random_state=seed)
