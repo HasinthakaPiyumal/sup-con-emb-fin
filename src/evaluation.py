@@ -1,5 +1,4 @@
-"""Evaluation metrics and reporting utilities."""
-
+import os
 from typing import List, Optional
 
 import numpy as np
@@ -7,7 +6,14 @@ import pandas as pd
 import torch
 import wandb
 from sklearn.model_selection import StratifiedKFold, StratifiedGroupKFold
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, classification_report
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    precision_score,
+    recall_score,
+    classification_report,
+    confusion_matrix,
+)
 
 from .config import set_seed
 from .classifiers import build_centroids, predict_centroid, train_and_classify_knn
@@ -21,7 +27,8 @@ def _report_method(
     all_true: List[int],
     all_pred: List[int],
     class_names: List[str],
-    wandb_key: str
+    wandb_key: str,
+    save_dir: Optional[str] = None,
 ) -> None:
     """
     Print and log evaluation metrics for a classification method.
@@ -34,6 +41,7 @@ def _report_method(
         all_pred: All predicted labels.
         class_names: List of class names.
         wandb_key: Key prefix for wandb logging.
+        save_dir: Optional directory to save confusion matrix and report CSVs.
     """
     if not fold_accuracies:
         return
@@ -54,22 +62,42 @@ def _report_method(
     final_precision = precision_score(all_true, all_pred, average="macro", zero_division=0)
     final_recall = recall_score(all_true, all_pred, average="macro", zero_division=0)
 
-    # Log to wandb: final scalars separately, then report table and confusion matrix
-    wandb.log({
-        f"final_{wandb_key}_accuracy": final_accuracy,
-        f"final_{wandb_key}_f1": final_f1,
-        f"final_{wandb_key}_precision": final_precision,
-        f"final_{wandb_key}_recall": final_recall,
-        f"{wandb_key}_report": wandb.Table(dataframe=pd.DataFrame(
-            classification_report(all_true, all_pred, target_names=class_names, digits=4, output_dict=True)
-        ).transpose().reset_index().rename(columns={"index": "class"})),
-        f"{wandb_key}_confusion": wandb.plot.confusion_matrix(
-            probs=None,
-            y_true=all_true,
-            preds=all_pred,
-            class_names=class_names
-        )
-    })
+    # Calculate raw confusion matrix DataFrame (Actual vs Predicted)
+    cm = confusion_matrix(all_true, all_pred, labels=list(range(len(class_names))))
+    cm_df = pd.DataFrame(cm, index=class_names, columns=class_names)
+    
+    # Save CSV files locally if save_dir is specified
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+        cm_path = os.path.join(save_dir, f"confusion_matrix_{wandb_key}.csv")
+        report_path = os.path.join(save_dir, f"classification_report_{wandb_key}.csv")
+        cm_df.to_csv(cm_path)
+        report_dict = classification_report(all_true, all_pred, target_names=class_names, digits=4, output_dict=True)
+        pd.DataFrame(report_dict).transpose().to_csv(report_path)
+        print(f"Saved local evaluation artifacts to: {save_dir}")
+
+    # Log to wandb if run is active
+    if wandb.run is not None:
+        wandb_payload = {
+            f"final_{wandb_key}_accuracy": final_accuracy,
+            f"final_{wandb_key}_f1": final_f1,
+            f"final_{wandb_key}_precision": final_precision,
+            f"final_{wandb_key}_recall": final_recall,
+            f"{wandb_key}_report": wandb.Table(dataframe=pd.DataFrame(
+                classification_report(all_true, all_pred, target_names=class_names, digits=4, output_dict=True)
+            ).transpose().reset_index().rename(columns={"index": "class"})),
+            f"{wandb_key}_confusion": wandb.plot.confusion_matrix(
+                probs=None,
+                y_true=all_true,
+                preds=all_pred,
+                class_names=class_names,
+                title=f"Confusion Matrix ({name})"
+            ),
+            f"{wandb_key}_confusion_matrix_table": wandb.Table(
+                dataframe=cm_df.reset_index().rename(columns={"index": "Actual \\ Predicted"})
+            )
+        }
+        wandb.log(wandb_payload)
 
 
 def evaluate_saved_embeddings_5fold(
@@ -134,16 +162,18 @@ def evaluate_saved_embeddings_5fold(
             f"KNN Acc {acc_knn[-1]:.4f} F1 {f1_knn[-1]:.4f}"
         )
     
-    # Report results
+    # Report results & save artifacts
     _report_method(
         "PHASE 2 - CENTROID",
         acc_centroid, f1_centroid,
         all_true, pred_centroid_all,
-        class_names, "phase2_centroid"
+        class_names, "phase2_centroid",
+        save_dir=save_dir
     )
     _report_method(
         "PHASE 2 - KNN",
         acc_knn, f1_knn,
         all_true, pred_knn_all,
-        class_names, "phase2_knn"
+        class_names, "phase2_knn",
+        save_dir=save_dir
     )
