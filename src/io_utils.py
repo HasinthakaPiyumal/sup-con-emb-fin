@@ -23,35 +23,37 @@ def save_fold_embeddings(
     descriptions: Optional[Sequence[str]] = None,
 ) -> pd.DataFrame:
     """
-    Create a DataFrame with fold metadata and embeddings.
+    Create a DataFrame with fold metadata and out-of-fold embeddings.
 
     Args:
         fold: Fold number.
         y_test: Test labels.
         test_emb: Test embeddings.
-        files: Optional file identifiers (one per test sample). When provided,
-            added as column "file".
+        files: Optional file identifiers (one per test sample). Added as column "file".
         descriptions: Optional descriptions (e.g. code_summary) per test sample.
-            When provided, added as column "description".
+            Added as column "code_summary".
 
     Returns:
-        DataFrame with fold, label, optional file/description, and embedding columns.
+        DataFrame with columns: file, label, code_summary, dim_1..dim_D, fold.
     """
     emb = _to_numpy(test_emb)
 
-    # Create metadata columns
-    meta_dict = {"fold": fold, "label": y_test}
+    data_dict = {}
     if files is not None:
-        meta_dict["file"] = list(files)
+        data_dict["file"] = list(files)
+    
+    data_dict["label"] = list(y_test)
+    
     if descriptions is not None:
-        meta_dict["description"] = list(descriptions)
-    meta = pd.DataFrame(meta_dict)
+        data_dict["code_summary"] = list(descriptions)
+    
+    # 1-indexed dim_1, dim_2, ..., dim_D
+    for i in range(emb.shape[1]):
+        data_dict[f"dim_{i + 1}"] = emb[:, i]
+        
+    data_dict["fold"] = fold
 
-    # Create embedding columns
-    emb_columns = [f"emb_{i}" for i in range(emb.shape[1])]
-    features = pd.DataFrame(emb, columns=emb_columns)
-
-    return pd.concat([meta, features], axis=1)
+    return pd.DataFrame(data_dict)
 
 
 def load_saved_embeddings(
@@ -66,15 +68,17 @@ def load_saved_embeddings(
     Returns:
         Tuple of (embeddings, labels, files) or (None, None, None) if not found.
     """
-    path = os.path.join(save_dir, "all_folds_test_embeddings.csv")
+    path = os.path.join(save_dir, "oof_embeddings.csv")
+    if not os.path.exists(path):
+        path = os.path.join(save_dir, "all_folds_test_embeddings.csv")
     
     if not os.path.exists(path):
         return None, None, None
     
     df = pd.read_csv(path)
     
-    # Extract embedding columns
-    emb_cols = [c for c in df.columns if c.startswith("emb_")]
+    # Extract embedding columns (supports both dim_ and emb_ prefixes)
+    emb_cols = [c for c in df.columns if c.startswith("dim_") or c.startswith("emb_")]
     embeddings = df[emb_cols].values.astype(np.float32)
     labels = df["label"].values.astype(int)
     files = df["file"].values if "file" in df.columns else None
@@ -87,7 +91,7 @@ def save_all_embeddings(
     save_dir: str
 ) -> str:
     """
-    Concatenate and save all fold embeddings to disk.
+    Concatenate and save out-of-fold embeddings to disk.
     
     Args:
         all_rows: List of DataFrames from each fold.
@@ -99,8 +103,13 @@ def save_all_embeddings(
     if not all_rows:
         return ""
     
-    out_path = os.path.join(save_dir, "all_folds_test_embeddings.csv")
+    os.makedirs(save_dir, exist_ok=True)
+    out_path = os.path.join(save_dir, "oof_embeddings.csv")
     combined = pd.concat(all_rows, ignore_index=True)
     combined.to_csv(out_path, index=False)
+    
+    # Save a copy as all_folds_test_embeddings.csv for backward compatibility
+    legacy_path = os.path.join(save_dir, "all_folds_test_embeddings.csv")
+    combined.to_csv(legacy_path, index=False)
     
     return out_path

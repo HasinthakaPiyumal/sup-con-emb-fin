@@ -87,6 +87,7 @@ def main():
             max_seq_length=MAX_SEQ_LENGTH,
             seed=SEED,
             files=dataset["file"].tolist() if "file" in dataset.columns else None,
+            descriptions=dataset["code_summary"].tolist(),
         )
     else:
         # Run training with configurable loss and hard negative mining

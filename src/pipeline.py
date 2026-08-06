@@ -83,11 +83,13 @@ def run_5fold_cv_no_finetuning(
     max_seq_length: int = 256,
     seed: int = 42,
     files: Optional[Sequence[str]] = None,
+    descriptions: Optional[Sequence[str]] = None,
+    save_dir: str = "saved_test_embeddings",
 ) -> None:
     """
     Encode all samples with the raw model (no training), then run 5-fold CV
     training KNN and Centroid on 4 folds and testing on 1 fold. Log results to
-    console and wandb. Use when RUN_WITHOUT_FINETUNING is True.
+    console and wandb. Save out-of-fold test embeddings to disk.
     """
     from sentence_transformers import SentenceTransformer
 
@@ -95,6 +97,7 @@ def run_5fold_cv_no_finetuning(
     texts = np.array(list(texts), dtype=object)
     labels = np.array(list(labels), dtype=int)
     files_arr = np.array(list(files), dtype=object) if files is not None else None
+    descriptions_arr = np.array(list(descriptions), dtype=object) if descriptions is not None else None
 
     if len(labels) == 0:
         raise ValueError(
@@ -133,6 +136,7 @@ def run_5fold_cv_no_finetuning(
     acc_centroid, f1_centroid = [], []
     acc_knn, f1_knn = [], []
     all_true, pred_centroid_all, pred_knn_all = [], [], []
+    all_fold_data = []
 
     if files_arr is not None:
         sgkf = StratifiedGroupKFold(n_splits=num_folds, shuffle=True, random_state=seed)
@@ -163,6 +167,14 @@ def run_5fold_cv_no_finetuning(
         f1_knn.append(f1_k)
         pred_knn_all.extend(pred_k)
 
+        # Save fold OOF embeddings
+        test_files = files_arr[test_idx] if files_arr is not None else None
+        test_descriptions = descriptions_arr[test_idx] if descriptions_arr is not None else None
+        all_fold_data.append(save_fold_embeddings(
+            fold, y_test, X_test,
+            files=test_files, descriptions=test_descriptions,
+        ))
+
         print(
             f"No-FT fold {fold}: "
             f"Centroid Acc {acc_c:.4f} F1 {f1_c:.4f} | "
@@ -175,17 +187,24 @@ def run_5fold_cv_no_finetuning(
             f"no_ft_fold{fold}_knn_f1": f1_k,
         })
 
+    # Save all OOF embeddings
+    if all_fold_data:
+        out_path = save_all_embeddings(all_fold_data, save_dir)
+        print(f"Saved out-of-fold embeddings -> {out_path}")
+
     _report_method(
         "NO FINETUNING - CENTROID",
         acc_centroid, f1_centroid,
         all_true, pred_centroid_all,
         class_names, "no_ft_centroid",
+        save_dir=save_dir,
     )
     _report_method(
         "NO FINETUNING - KNN",
         acc_knn, f1_knn,
         all_true, pred_knn_all,
         class_names, "no_ft_knn",
+        save_dir=save_dir,
     )
     wandb.finish()
 
