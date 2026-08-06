@@ -6,6 +6,7 @@ from typing import List, Optional, Sequence, Tuple, Union
 import numpy as np
 import pandas as pd
 import torch
+import wandb
 
 
 def _to_numpy(x: Union[torch.Tensor, np.ndarray]) -> np.ndarray:
@@ -111,5 +112,19 @@ def save_all_embeddings(
     # Save a copy as all_folds_test_embeddings.csv for backward compatibility
     legacy_path = os.path.join(save_dir, "all_folds_test_embeddings.csv")
     combined.to_csv(legacy_path, index=False)
+
+    # Upload artifact to WandB if run is active
+    if wandb.run is not None:
+        try:
+            artifact = wandb.Artifact(
+                name="oof_embeddings",
+                type="dataset",
+                description="Out-of-fold embeddings generated from 5-fold Stratified Group CV",
+            )
+            artifact.add_file(out_path)
+            wandb.log_artifact(artifact)
+            print(f"Logged OOF embeddings artifact to WandB: oof_embeddings")
+        except Exception as e:
+            print(f"Warning: Failed to log WandB artifact: {e}")
     
     return out_path

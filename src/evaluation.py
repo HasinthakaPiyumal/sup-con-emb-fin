@@ -99,6 +99,21 @@ def _report_method(
         }
         wandb.log(wandb_payload)
 
+        # Upload evaluation CSVs as WandB Artifacts
+        if save_dir:
+            try:
+                eval_artifact = wandb.Artifact(
+                    name=f"eval_csv_{wandb_key}",
+                    type="evaluation_results",
+                    description=f"Confusion matrix and classification report CSVs for {name}",
+                )
+                eval_artifact.add_file(cm_path)
+                eval_artifact.add_file(report_path)
+                wandb.log_artifact(eval_artifact)
+                print(f"Logged evaluation CSV artifacts to WandB: eval_csv_{wandb_key}")
+            except Exception as e:
+                print(f"Warning: Failed to log evaluation WandB artifact: {e}")
+
 
 def evaluate_saved_embeddings_5fold(
     save_dir: str,
