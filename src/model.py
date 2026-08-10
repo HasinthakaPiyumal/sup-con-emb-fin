@@ -41,7 +41,7 @@ def _add_dense_head(
     return model
 
 
-def _configure_model_for_training(model: SentenceTransformer) -> None:
+def _configure_model_for_training(model: SentenceTransformer, is_lora: bool = False) -> None:
     """Configure model internals for efficient training."""
     first_module = getattr(model, "_first_module", lambda: None)()
     if not first_module or not hasattr(first_module, "auto_model"):
@@ -49,16 +49,22 @@ def _configure_model_for_training(model: SentenceTransformer) -> None:
     
     auto_model = first_module.auto_model
     
-    # Enable gradient checkpointing
-    if hasattr(auto_model, "gradient_checkpointing_enable"):
-        auto_model.gradient_checkpointing_enable()
-    
     # Configure attention
     config = getattr(auto_model, "config", None)
     if config:
         config.use_cache = False
         if hasattr(config, "attn_implementation"):
             config.attn_implementation = "sdpa"
+
+    # For LoRA PEFT: enable input require grads for autograd backward pass
+    if is_lora:
+        if hasattr(auto_model, "enable_input_require_grads"):
+            auto_model.enable_input_require_grads()
+        return
+
+    # Enable gradient checkpointing for full fine-tuning
+    if hasattr(auto_model, "gradient_checkpointing_enable"):
+        auto_model.gradient_checkpointing_enable()
 
 
 def _get_optimizer() -> tuple:
@@ -171,6 +177,8 @@ def apply_lora_to_model(
     )
 
     peft_model = get_peft_model(auto_model, peft_config)
+    if hasattr(peft_model, "enable_input_require_grads"):
+        peft_model.enable_input_require_grads()
     first_module.auto_model = peft_model
     print(f"  [LoRA Enabled] Configured PEFT LoRA (r={r}, alpha={lora_alpha}, dropout={lora_dropout}, targets={target_modules})")
     
@@ -268,7 +276,7 @@ def train_model(
     if use_bf16:
         model = model.to(torch.bfloat16)
     
-    _configure_model_for_training(model)
+    _configure_model_for_training(model, is_lora=use_lora)
     
     # Setup training
     train_loader = DataLoader(
