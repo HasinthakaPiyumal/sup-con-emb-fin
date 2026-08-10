@@ -56,15 +56,18 @@ def _configure_model_for_training(model: SentenceTransformer, is_lora: bool = Fa
         if hasattr(config, "attn_implementation"):
             config.attn_implementation = "sdpa"
 
-    # For LoRA PEFT: enable input require grads for autograd backward pass
+    # Enable input require grads for PEFT LoRA autograd backward pass
     if is_lora:
         if hasattr(auto_model, "enable_input_require_grads"):
             auto_model.enable_input_require_grads()
-        return
 
-    # Enable gradient checkpointing for full fine-tuning
+    # Enable gradient checkpointing to save GPU VRAM (critical for 1.5B LLM backbones)
     if hasattr(auto_model, "gradient_checkpointing_enable"):
-        auto_model.gradient_checkpointing_enable()
+        try:
+            auto_model.gradient_checkpointing_enable()
+            print("  [Memory Opt] Enabled Gradient Checkpointing.")
+        except Exception as e:
+            print(f"  [Memory Opt Warning] Could not enable gradient checkpointing: {e}")
 
 
 def _get_optimizer() -> tuple:

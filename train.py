@@ -12,6 +12,7 @@ Supported loss functions:
 """
 
 import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 from src.data import load_and_preprocess_data, LossType
 from src.pipeline import run_5fold_cv, run_5fold_cv_no_finetuning, train_full_dataset_and_push_to_hub
@@ -39,7 +40,7 @@ HN_BASE_MODEL = "google-bert/bert-base-uncased"  # Fast model for mining
 MODEL_NAME = "BAAI/bge-code-v1"
 # MODEL_NAME = "google-bert/bert-base-uncased"
 EPOCHS = 3
-BATCH_SIZE = 128
+BATCH_SIZE = 32  # Recommended batch size for 1.5B LLM backbones on 20GB GPUs
 LEARNING_RATE = 2e-5
 WARMUP_STEPS = 10
 MAX_PAIRS_PER_CLASS = 80
