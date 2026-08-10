@@ -234,37 +234,16 @@ def run_5fold_cv(
     # Optional metadata for OOF CSV (must align with texts/labels)
     files: Optional[Sequence[str]] = None,
     descriptions: Optional[Sequence[str]] = None,
-    freeze_base_model: bool = True,
+    freeze_base_model: bool = False,
+    # LoRA / PEFT settings
+    use_lora: bool = False,
+    lora_r: int = 16,
+    lora_alpha: int = 32,
+    lora_dropout: float = 0.05,
+    lora_target_modules: Optional[List[str]] = None,
 ) -> None:
     """
     Run two-phase 5-fold cross-validation.
-    
-    Phase 1: Train embedding model and save test embeddings for each fold.
-    Phase 2: Evaluate embeddings with centroid and KNN classifiers.
-    
-    Args:
-        texts: Input text samples.
-        labels: Encoded integer labels.
-        class_names: Original class names for reporting.
-        model_name: HuggingFace model identifier.
-        num_folds: Number of CV folds.
-        epochs: Training epochs per fold.
-        batch_size: Training batch size.
-        lr: Learning rate.
-        warmup_steps: LR warmup steps.
-        max_pairs_per_class: Maximum contrastive pairs per class.
-        max_seq_length: Maximum token sequence length.
-        seed: Random seed.
-        save_dir: Directory to save embeddings.
-        dense_dim: Output dimension for projection head.
-        loss_type: Loss function type ("contrastive", "mnrl", "triplet" or LossType enum).
-        loss_margin: Margin for contrastive/triplet loss.
-        use_hard_negatives: Whether to use hard negative mining.
-        num_hard_negatives: Number of hard negatives per sample.
-        hn_base_model: Base model for hard negative mining embeddings.
-        files: Optional file identifiers aligned with texts (for OOF CSV).
-        descriptions: Optional descriptions (e.g. code_summary) aligned with texts (for OOF CSV).
-        freeze_base_model: If True, freeze base Transformer backbone parameters during training.
     """
     # Convert string loss_type to enum if needed
     if isinstance(loss_type, str):
@@ -289,6 +268,9 @@ def run_5fold_cv(
         "num_hard_negatives": num_hard_negatives,
         "hn_base_model": hn_base_model,
         "freeze_base_model": freeze_base_model,
+        "use_lora": use_lora,
+        "lora_r": lora_r if use_lora else None,
+        "lora_alpha": lora_alpha if use_lora else None,
     }
     init_wandb(model_name, config)
     
@@ -296,7 +278,7 @@ def run_5fold_cv(
     print(f"TRAINING CONFIGURATION")
     print(f"{'=' * 80}")
     print(f"  Loss function: {loss_type.value}")
-    print(f"  Freeze Base Model: {freeze_base_model}")
+    print(f"  Use LoRA (PEFT): {use_lora} (r={lora_r}, alpha={lora_alpha})" if use_lora else f"  Freeze Base Model: {freeze_base_model}")
     if loss_type in (LossType.CONTRASTIVE, LossType.TRIPLET):
         print(f"  Loss margin: {loss_margin}")
     if use_hard_negatives:
@@ -352,6 +334,11 @@ def run_5fold_cv(
             loss_type=loss_type,
             loss_margin=loss_margin,
             freeze_base_model=freeze_base_model,
+            use_lora=use_lora,
+            lora_r=lora_r,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            lora_target_modules=lora_target_modules,
         )
         
         clear_memory()

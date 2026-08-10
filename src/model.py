@@ -107,6 +107,65 @@ def get_loss_function(
         raise ValueError(f"Unknown loss type: {loss_type}")
 
 
+def apply_lora_to_model(
+    model: SentenceTransformer,
+    r: int = 16,
+    lora_alpha: int = 32,
+    lora_dropout: float = 0.05,
+    target_modules: Optional[List[str]] = None,
+) -> SentenceTransformer:
+    """
+    Apply LoRA (PEFT) adapters to the SentenceTransformer base backbone.
+    
+    Args:
+        model: SentenceTransformer model.
+        r: LoRA rank dimension.
+        lora_alpha: LoRA scaling factor alpha.
+        lora_dropout: LoRA dropout probability.
+        target_modules: List of module names to apply LoRA to.
+
+    Returns:
+        SentenceTransformer model with LoRA adapters attached.
+    """
+    try:
+        from peft import LoraConfig, get_peft_model
+    except ImportError:
+        raise ImportError(
+            "PEFT library is required for LoRA training. Install via: pip install peft"
+        )
+
+    first_module = getattr(model, "_first_module", lambda: model[0])()
+    if not hasattr(first_module, "auto_model"):
+        print("  [LoRA Warning] Model backbone does not have auto_model attribute. LoRA skipped.")
+        return model
+
+    auto_model = first_module.auto_model
+
+    # Auto-detect target modules if not specified
+    if not target_modules:
+        module_names = [name for name, _ in auto_model.named_modules()]
+        if any("query" in m for m in module_names):
+            target_modules = ["query", "value"]
+        elif any("q_proj" in m for m in module_names):
+            target_modules = ["q_proj", "v_proj"]
+        else:
+            target_modules = ["query", "value", "key", "q_proj", "v_proj"]
+
+    peft_config = LoraConfig(
+        r=r,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        bias="none",
+        target_modules=target_modules,
+    )
+
+    first_module.auto_model = get_peft_model(auto_model, peft_config)
+    print(f"  [LoRA Enabled] Configured PEFT LoRA (r={r}, alpha={lora_alpha}, dropout={lora_dropout}, targets={target_modules})")
+    first_module.auto_model.print_trainable_parameters()
+
+    return model
+
+
 def train_model(
     model_name: str,
     max_seq_length: int,
@@ -118,10 +177,15 @@ def train_model(
     dense_dim: int = 8,
     loss_type: LossType = LossType.MNRL,
     loss_margin: float = 0.5,
-    freeze_base_model: bool = True,
+    freeze_base_model: bool = False,
+    use_lora: bool = False,
+    lora_r: int = 16,
+    lora_alpha: int = 32,
+    lora_dropout: float = 0.05,
+    lora_target_modules: Optional[List[str]] = None,
 ) -> SentenceTransformer:
     """
-    Train a SentenceTransformer model with configurable loss function.
+    Train a SentenceTransformer model with configurable loss function and PEFT/LoRA.
     
     Args:
         model_name: HuggingFace model name or path.
@@ -135,6 +199,11 @@ def train_model(
         loss_type: Type of loss function to use.
         loss_margin: Margin for contrastive/triplet loss.
         freeze_base_model: If True, freeze base Transformer backbone parameters.
+        use_lora: If True, attach PEFT LoRA adapters to the transformer backbone.
+        lora_r: Rank for LoRA adaptation.
+        lora_alpha: Alpha scaling factor for LoRA.
+        lora_dropout: Dropout probability for LoRA layers.
+        lora_target_modules: Target layer names for LoRA.
     
     Returns:
         Trained SentenceTransformer model.
@@ -144,9 +213,18 @@ def train_model(
     # Load and configure model
     model = SentenceTransformer(model_name, trust_remote_code=True)
     model.max_seq_length = max_seq_length
-    
-    # Freeze base Transformer backbone if specified
-    if freeze_base_model:
+
+    # Apply LoRA if requested
+    if use_lora:
+        model = apply_lora_to_model(
+            model,
+            r=lora_r,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            target_modules=lora_target_modules,
+        )
+    # Freeze base Transformer backbone if specified (when LoRA is off)
+    elif freeze_base_model:
         first_module = getattr(model, "_first_module", lambda: model[0])()
         if hasattr(first_module, "auto_model"):
             for param in first_module.auto_model.parameters():

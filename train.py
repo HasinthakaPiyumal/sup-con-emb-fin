@@ -47,8 +47,17 @@ MAX_SEQ_LENGTH = 768
 SEED = 42
 DENSE_DIM = 8
 
-# If True: freeze base Transformer backbone parameters during fine-tuning (prevents overfitting)
-FREEZE_BASE_MODEL = True
+# Training Strategy Mode:
+# - "lora": Parameter-Efficient Fine-Tuning (PEFT) using LoRA adapters (Recommended)
+# - "freeze_base": Freeze Transformer backbone parameters, train only projection head
+# - "full": Full fine-tuning of all Transformer layers
+TRAINING_MODE = "lora"  # Options: "lora", "freeze_base", "full"
+
+# LoRA / PEFT hyperparameters (active when TRAINING_MODE = "lora")
+LORA_R = 16  # LoRA rank dimension (e.g. 8, 16, 32)
+LORA_ALPHA = 32  # LoRA scaling factor alpha (e.g. 16, 32, 64)
+LORA_DROPOUT = 0.05  # Dropout probability for LoRA layers
+LORA_TARGET_MODULES = ["query", "value"]  # Set None for auto-detection
 
 # Minimum samples per label to keep (labels with fewer are dropped). Use 2 for small
 # datasets; for 5-fold CV each label ideally has at least 5 samples.
@@ -93,6 +102,13 @@ def main():
             descriptions=dataset["code_summary"].tolist(),
         )
     else:
+        # Determine training mode flags
+        mode = TRAINING_MODE.lower().strip()
+        use_lora = (mode == "lora")
+        freeze_base = (mode in ["freeze_base", "freeze", "frozen_backbone"])
+        
+        print(f"Executing Training Strategy: {mode.upper()} (use_lora={use_lora}, freeze_base={freeze_base})")
+
         # Run training with configurable loss and hard negative mining
         run_5fold_cv(
             texts=dataset["code_summary"],
@@ -117,7 +133,13 @@ def main():
             # OOF CSV metadata (label, file, description + embeddings)
             files=dataset["file"].tolist() if "file" in dataset.columns else None,
             descriptions=dataset["code_summary"].tolist(),
-            freeze_base_model=FREEZE_BASE_MODEL,
+            freeze_base_model=freeze_base,
+            # LoRA / PEFT settings
+            use_lora=use_lora,
+            lora_r=LORA_R,
+            lora_alpha=LORA_ALPHA,
+            lora_dropout=LORA_DROPOUT,
+            lora_target_modules=LORA_TARGET_MODULES,
         )
 
     # Optional: train on full dataset and save/push model
