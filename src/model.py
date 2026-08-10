@@ -141,15 +141,26 @@ def apply_lora_to_model(
 
     auto_model = first_module.auto_model
 
-    # Auto-detect target modules if not specified
-    if not target_modules:
-        module_names = [name for name, _ in auto_model.named_modules()]
-        if any("query" in m for m in module_names):
-            target_modules = ["query", "value"]
-        elif any("q_proj" in m for m in module_names):
-            target_modules = ["q_proj", "v_proj"]
+    # Extract all leaf layer module names
+    all_module_names = set(name.split(".")[-1] for name, _ in auto_model.named_modules())
+
+    # If user provided target_modules, filter only valid ones present in the model
+    if target_modules:
+        valid_targets = [t for t in target_modules if t in all_module_names]
+        if not valid_targets:
+            print(f"  [LoRA Warning] Target modules {target_modules} not found in model. Auto-detecting valid layers...")
+            target_modules = None
         else:
-            target_modules = ["query", "value", "key", "q_proj", "v_proj"]
+            target_modules = valid_targets
+
+    # Auto-detect target modules if not specified or invalid
+    if not target_modules:
+        if "q_proj" in all_module_names:
+            target_modules = ["q_proj", "v_proj"]
+        elif "query" in all_module_names:
+            target_modules = ["query", "value"]
+        else:
+            target_modules = [t for t in ["q_proj", "v_proj", "query", "value", "k_proj", "o_proj"] if t in all_module_names]
 
     peft_config = LoraConfig(
         r=r,

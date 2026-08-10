@@ -57,7 +57,7 @@ TRAINING_MODE = "lora"  # Options: "lora", "freeze_base", "full"
 LORA_R = 16  # LoRA rank dimension (e.g. 8, 16, 32)
 LORA_ALPHA = 32  # LoRA scaling factor alpha (e.g. 16, 32, 64)
 LORA_DROPOUT = 0.05  # Dropout probability for LoRA layers
-LORA_TARGET_MODULES = ["query", "value"]  # Set None for auto-detection
+LORA_TARGET_MODULES = None  # None for auto-detection (works for Qwen2, BERT, RoBERTa, LLaMA)
 
 # Minimum samples per label to keep (labels with fewer are dropped). Use 2 for small
 # datasets; for 5-fold CV each label ideally has at least 5 samples.
