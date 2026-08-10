@@ -234,6 +234,7 @@ def run_5fold_cv(
     # Optional metadata for OOF CSV (must align with texts/labels)
     files: Optional[Sequence[str]] = None,
     descriptions: Optional[Sequence[str]] = None,
+    freeze_base_model: bool = True,
 ) -> None:
     """
     Run two-phase 5-fold cross-validation.
@@ -263,6 +264,7 @@ def run_5fold_cv(
         hn_base_model: Base model for hard negative mining embeddings.
         files: Optional file identifiers aligned with texts (for OOF CSV).
         descriptions: Optional descriptions (e.g. code_summary) aligned with texts (for OOF CSV).
+        freeze_base_model: If True, freeze base Transformer backbone parameters during training.
     """
     # Convert string loss_type to enum if needed
     if isinstance(loss_type, str):
@@ -286,6 +288,7 @@ def run_5fold_cv(
         "use_hard_negatives": use_hard_negatives,
         "num_hard_negatives": num_hard_negatives,
         "hn_base_model": hn_base_model,
+        "freeze_base_model": freeze_base_model,
     }
     init_wandb(model_name, config)
     
@@ -293,6 +296,7 @@ def run_5fold_cv(
     print(f"TRAINING CONFIGURATION")
     print(f"{'=' * 80}")
     print(f"  Loss function: {loss_type.value}")
+    print(f"  Freeze Base Model: {freeze_base_model}")
     if loss_type in (LossType.CONTRASTIVE, LossType.TRIPLET):
         print(f"  Loss margin: {loss_margin}")
     if use_hard_negatives:
@@ -347,6 +351,7 @@ def run_5fold_cv(
             dense_dim=dense_dim,
             loss_type=loss_type,
             loss_margin=loss_margin,
+            freeze_base_model=freeze_base_model,
         )
         
         clear_memory()
@@ -444,6 +449,7 @@ def train_full_dataset_and_push_to_hub(
         hf_token: Optional Hugging Face token for login (else use huggingface-cli login).
         save_local: Whether to save the model locally.
         local_save_dir: Directory to save the model locally.
+        freeze_base_model: If True, freeze base Transformer backbone parameters during training.
 
     Returns:
         Path to saved model (local path if saved locally, hub_model_id if pushed to hub).
@@ -461,7 +467,7 @@ def train_full_dataset_and_push_to_hub(
     print(f"\n{'=' * 80}")
     print("FULL-DATASET CONTRASTIVE TRAINING")
     print(f"{'=' * 80}")
-    print(f"  Samples: {n}, Loss: {loss_type.value}")
+    print(f"  Samples: {n}, Loss: {loss_type.value}, Freeze Base: {freeze_base_model}")
 
     clear_memory()
     prep = prepare_fold_data(
@@ -473,7 +479,7 @@ def train_full_dataset_and_push_to_hub(
     )
     if prep[0] is None:
         print("Full-dataset training skipped: not enough pairs.")
-        return
+        return None
     train_examples, _, _, _, _ = prep
     print(f"  Generated {len(train_examples)} training examples")
 
@@ -483,6 +489,7 @@ def train_full_dataset_and_push_to_hub(
         dense_dim=dense_dim,
         loss_type=loss_type,
         loss_margin=loss_margin,
+        freeze_base_model=freeze_base_model,
     )
 
     saved_path = None

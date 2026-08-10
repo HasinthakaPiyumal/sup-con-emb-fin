@@ -118,6 +118,7 @@ def train_model(
     dense_dim: int = 8,
     loss_type: LossType = LossType.MNRL,
     loss_margin: float = 0.5,
+    freeze_base_model: bool = True,
 ) -> SentenceTransformer:
     """
     Train a SentenceTransformer model with configurable loss function.
@@ -133,6 +134,7 @@ def train_model(
         dense_dim: Output dimension for dense projection head.
         loss_type: Type of loss function to use.
         loss_margin: Margin for contrastive/triplet loss.
+        freeze_base_model: If True, freeze base Transformer backbone parameters.
     
     Returns:
         Trained SentenceTransformer model.
@@ -143,8 +145,29 @@ def train_model(
     model = SentenceTransformer(model_name, trust_remote_code=True)
     model.max_seq_length = max_seq_length
     
-    # if dense_dim and dense_dim > 0:
-    #     model = _add_dense_head(model, out_dim=dense_dim,activation=torch.nn.Linear)
+    # Freeze base Transformer backbone if specified
+    if freeze_base_model:
+        first_module = getattr(model, "_first_module", lambda: model[0])()
+        if hasattr(first_module, "auto_model"):
+            for param in first_module.auto_model.parameters():
+                param.requires_grad = False
+            print("  [Freeze Base] Successfully froze Transformer backbone parameters.")
+
+        # Ensure trainable parameters exist by attaching a projection head if needed
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
+        if not trainable_params:
+            in_dim = model.get_sentence_embedding_dimension()
+            out_dim = dense_dim if (dense_dim and dense_dim > 0) else in_dim
+            dense_layer = sbert_models.Dense(
+                in_features=in_dim,
+                out_features=out_dim,
+                bias=True,
+                activation_function=torch.nn.Identity(),
+            )
+            model.add_module("dense_head", dense_layer)
+            print(f"  [Freeze Base] Added trainable Dense head layer ({in_dim} -> {out_dim}).")
+    elif dense_dim and dense_dim > 0:
+        model = _add_dense_head(model, out_dim=dense_dim, activation=torch.nn.Linear)
     
     # Use bfloat16 if available
     use_bf16 = torch.cuda.is_available()
@@ -164,10 +187,15 @@ def train_model(
     
     # Get the appropriate loss function
     loss_fn = get_loss_function(model, loss_type, margin=loss_margin)
-    print(f"  Using loss: {loss_type.value} (margin={loss_margin})")
+    print(f"  Using loss: {loss_type.value} (margin={loss_margin}) | Freeze Base: {freeze_base_model}")
     
     opt_cls, opt_kwargs = _get_optimizer()
     opt_kwargs["lr"] = lr
+    
+    # Filter optimizer parameters to only trainable ones
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    if not trainable_params:
+        print("  Warning: No trainable parameters found! All layers are frozen.")
     
     # Train
     model.fit(

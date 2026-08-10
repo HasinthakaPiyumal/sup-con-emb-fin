@@ -23,7 +23,7 @@ from src.pipeline import run_5fold_cv, run_5fold_cv_no_finetuning, train_full_da
 
 # If True: encode all samples with raw model (no training), then 5-fold CV with
 # KNN and Centroid on embeddings only. Fine-tuning pipeline is skipped.
-RUN_WITHOUT_FINETUNING = True
+RUN_WITHOUT_FINETUNING = False
 
 # Loss function: "contrastive", "mnrl", or "triplet"
 LOSS_TYPE = "contrastive"  # Options: LossType.CONTRASTIVE, LossType.MNRL, LossType.TRIPLET
@@ -46,6 +46,9 @@ MAX_PAIRS_PER_CLASS = 80
 MAX_SEQ_LENGTH = 768
 SEED = 42
 DENSE_DIM = 8
+
+# If True: freeze base Transformer backbone parameters during fine-tuning (prevents overfitting)
+FREEZE_BASE_MODEL = True
 
 # Minimum samples per label to keep (labels with fewer are dropped). Use 2 for small
 # datasets; for 5-fold CV each label ideally has at least 5 samples.
@@ -114,10 +117,11 @@ def main():
             # OOF CSV metadata (label, file, description + embeddings)
             files=dataset["file"].tolist() if "file" in dataset.columns else None,
             descriptions=dataset["code_summary"].tolist(),
+            freeze_base_model=FREEZE_BASE_MODEL,
         )
 
     # Optional: train on full dataset and save/push model
-    if RUN_FULL_DATASET_TRAINING:
+    if RUN_FULL_DATASET_TRAINING and not RUN_WITHOUT_FINETUNING:
         saved_path = train_full_dataset_and_push_to_hub(
             texts=dataset["code_summary"],
             labels=dataset["label_enc"],
@@ -140,6 +144,7 @@ def main():
             hf_token=HF_TOKEN or None,
             save_local=SAVE_MODEL_LOCALLY,
             local_save_dir=LOCAL_MODEL_DIR,
+            freeze_base_model=FREEZE_BASE_MODEL,
         )
         print(f"\nModel saved at: {saved_path}")
         if SAVE_MODEL_LOCALLY and not PUSH_TO_HUB:
