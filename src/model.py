@@ -170,9 +170,14 @@ def apply_lora_to_model(
         target_modules=target_modules,
     )
 
-    first_module.auto_model = get_peft_model(auto_model, peft_config)
+    peft_model = get_peft_model(auto_model, peft_config)
+    first_module.auto_model = peft_model
     print(f"  [LoRA Enabled] Configured PEFT LoRA (r={r}, alpha={lora_alpha}, dropout={lora_dropout}, targets={target_modules})")
-    first_module.auto_model.print_trainable_parameters()
+    
+    if hasattr(peft_model, "print_trainable_parameters"):
+        peft_model.print_trainable_parameters()
+    elif hasattr(first_module.auto_model, "print_trainable_parameters"):
+        first_module.auto_model.print_trainable_parameters()
 
     return model
 
