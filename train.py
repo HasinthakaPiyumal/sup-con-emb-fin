@@ -80,8 +80,8 @@ HF_TOKEN = ""  # Optional; set or use `huggingface-cli login`
 
 def main():
     """Main entry point for training."""
-    # dataset_path = "./data/labeled_verified_data.csv"
-    dataset_path = "./data/ms-patterns.csv"
+    dataset_path = "./data/feb-10-2026-community-descriptions-unique.csv"
+    # dataset_path = "./data/ms-patterns.csv"
     
     try:
         dataset, label_encoder = load_and_preprocess_data(
