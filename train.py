@@ -60,9 +60,9 @@ LORA_ALPHA = 32  # LoRA scaling factor alpha (e.g. 16, 32, 64)
 LORA_DROPOUT = 0.05  # Dropout probability for LoRA layers
 LORA_TARGET_MODULES = None  # None for auto-detection (works for Qwen2, BERT, RoBERTa, LLaMA)
 
-# Minimum samples per label to keep (labels with fewer are dropped). Use 2 for small
-# datasets; for 5-fold CV each label ideally has at least 5 samples.
-MIN_SAMPLES_PER_LABEL = 120
+# Minimum samples per label to keep (labels with fewer are dropped).
+# For unique 413-sample dataset, use 5 or 20. (Use 120 only for 2478-sample concated dataset).
+MIN_SAMPLES_PER_LABEL = 20
 
 # 5-Fold Cross Validation:
 # - If True: runs 5-fold CV evaluation, logs metrics and saves OOF embeddings/confusion matrix.

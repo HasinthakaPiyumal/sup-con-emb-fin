@@ -37,13 +37,21 @@ def load_and_preprocess_data(
     if not os.path.exists(path):
         raise FileNotFoundError(f"Dataset not found: {filepath}")
     
-    df = pd.read_csv(path)
+    df_raw = pd.read_csv(path)
     
     # Filter labels with enough samples
-    valid_labels = df["label"].value_counts()
+    valid_labels = df_raw["label"].value_counts()
     valid_labels = valid_labels[valid_labels >= min_samples_per_label].index
-    df = df[df["label"].isin(valid_labels)].reset_index(drop=True)
+    df = df_raw[df_raw["label"].isin(valid_labels)].reset_index(drop=True)
     
+    if len(df) == 0:
+        max_count = df_raw["label"].value_counts().max() if not df_raw.empty else 0
+        raise ValueError(
+            f"Dataset filtered down to 0 samples! min_samples_per_label={min_samples_per_label} is too high; "
+            f"the maximum class count in '{filepath}' is {max_count}. "
+            f"Please set MIN_SAMPLES_PER_LABEL to a lower value (e.g. 5 or 10) in train.py."
+        )
+
     # Encode labels
     le = LabelEncoder()
     df["label_enc"] = le.fit_transform(df["label"])
