@@ -67,11 +67,11 @@ MIN_SAMPLES_PER_LABEL = 20
 # 5-Fold Cross Validation:
 # - If True: runs 5-fold CV evaluation, logs metrics and saves OOF embeddings/confusion matrix.
 # - If False: skips 5-fold CV (saves massive time if you just want to train and save the final model).
-RUN_5FOLD_CV = False
+RUN_5FOLD_CV = True
 
 # Train on full dataset and optionally save/push model.
-RUN_FULL_DATASET_TRAINING = True  # Set to True to train on full dataset and save model
-SAVE_MODEL_LOCALLY = True  # Save trained model locally
+RUN_FULL_DATASET_TRAINING = False  # Set to True to train on full dataset and save model
+SAVE_MODEL_LOCALLY = False  # Save trained model locally
 LOCAL_MODEL_DIR = "saved_models"  # Directory to save models locally
 PUSH_TO_HUB = False  # Set to True to push model to Hugging Face Hub (requires HUB_MODEL_ID)
 HUB_MODEL_ID = "hasinthakapiyumal/bge-code-v1-ai-pattern-tuned"  # e.g. "your-org/code-embedding-model" (required if PUSH_TO_HUB=True)
