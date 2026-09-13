@@ -36,8 +36,8 @@ NUM_HARD_NEGATIVES = 10
 HN_BASE_MODEL = "google-bert/bert-base-uncased"  # Fast model for mining
 
 # Model and training
-# MODEL_NAME = "BAAI/bge-reasoner-embed-qwen3-8b-0923"
-MODEL_NAME = "BAAI/bge-code-v1"
+MODEL_NAME = "BAAI/bge-reasoner-embed-qwen3-8b-0923"
+# MODEL_NAME = "BAAI/bge-code-v1"
 # MODEL_NAME = "google-bert/bert-base-uncased"
 EPOCHS = 3
 BATCH_SIZE = 32  # Recommended batch size for 1.5B LLM backbones on 20GB GPUs
@@ -52,7 +52,7 @@ DENSE_DIM = 8
 # - "lora": Parameter-Efficient Fine-Tuning (PEFT) using LoRA adapters (Recommended)
 # - "freeze_base": Freeze Transformer backbone parameters, train only projection head
 # - "full": Full fine-tuning of all Transformer layers
-TRAINING_MODE = "lora"  # Options: "lora", "freeze_base", "full"
+TRAINING_MODE = "full"  # Options: "lora", "freeze_base", "full"
 
 # LoRA / PEFT hyperparameters (active when TRAINING_MODE = "lora")
 LORA_R = 16  # LoRA rank dimension (e.g. 8, 16, 32)
