@@ -406,6 +406,13 @@ def train_full_dataset_and_push_to_hub(
     hf_token: Optional[str] = None,
     save_local: bool = True,
     local_save_dir: str = "saved_models",
+    freeze_base_model: bool = False,
+    use_lora: bool = False,
+    lora_r: int = 16,
+    lora_alpha: int = 32,
+    lora_dropout: float = 0.05,
+    lora_target_modules: Optional[List[str]] = None,
+    class_names: Optional[List[str]] = None,
 ) -> str:
     """
     Train contrastive embedding model on the full dataset, optionally save locally and push to Hugging Face Hub.
@@ -477,6 +484,11 @@ def train_full_dataset_and_push_to_hub(
         loss_type=loss_type,
         loss_margin=loss_margin,
         freeze_base_model=freeze_base_model,
+        use_lora=use_lora,
+        lora_r=lora_r,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        lora_target_modules=lora_target_modules,
     )
 
     saved_path = None
@@ -484,12 +496,31 @@ def train_full_dataset_and_push_to_hub(
     # Save locally if requested
     if save_local:
         import os
+        import json
         os.makedirs(local_save_dir, exist_ok=True)
         # Create a descriptive model name based on config
         model_suffix = f"{loss_type.value}-hn{num_hard_negatives if use_hard_negatives else 0}-ep{epochs}"
         local_model_path = os.path.join(local_save_dir, f"full-dataset-{model_suffix}")
         print(f"Saving model locally to: {local_model_path}")
         model.save(local_model_path)
+        if class_names:
+            classes_path = os.path.join(local_model_path, "class_names.json")
+            with open(classes_path, "w") as f:
+                json.dump(class_names, f, indent=2)
+            print(f"Saved class names to: {classes_path}")
+
+        # Compute and save class centroids for instant inference
+        try:
+            import torch
+            print("Computing class centroids for instant prediction...")
+            all_embeddings = encode_in_batches(model, list(texts_arr), batch_size=batch_size)
+            centroids = build_centroids(all_embeddings, labels_arr)
+            centroids_path = os.path.join(local_model_path, "centroids.pt")
+            torch.save(centroids, centroids_path)
+            print(f"Saved class centroids to: {centroids_path}")
+        except Exception as e:
+            print(f"Warning: Could not save centroids: {e}")
+
         saved_path = local_model_path
         print(f"Model saved locally at: {local_model_path}")
 

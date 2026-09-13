@@ -64,8 +64,13 @@ LORA_TARGET_MODULES = None  # None for auto-detection (works for Qwen2, BERT, Ro
 # datasets; for 5-fold CV each label ideally has at least 5 samples.
 MIN_SAMPLES_PER_LABEL = 120
 
-# After 5-fold CV: train on full dataset and optionally save/push model.
-RUN_FULL_DATASET_TRAINING = False  # Set to True to train on full dataset after 5-fold CV
+# 5-Fold Cross Validation:
+# - If True: runs 5-fold CV evaluation, logs metrics and saves OOF embeddings/confusion matrix.
+# - If False: skips 5-fold CV (saves massive time if you just want to train and save the final model).
+RUN_5FOLD_CV = False
+
+# Train on full dataset and optionally save/push model.
+RUN_FULL_DATASET_TRAINING = True  # Set to True to train on full dataset and save model
 SAVE_MODEL_LOCALLY = True  # Save trained model locally
 LOCAL_MODEL_DIR = "saved_models"  # Directory to save models locally
 PUSH_TO_HUB = False  # Set to True to push model to Hugging Face Hub (requires HUB_MODEL_ID)
@@ -110,69 +115,78 @@ def main():
         
         print(f"Executing Training Strategy: {mode.upper()} (use_lora={use_lora}, freeze_base={freeze_base})")
 
-        # Run training with configurable loss and hard negative mining
-        run_5fold_cv(
-            texts=dataset["code_summary"],
-            labels=dataset["label_enc"],
-            class_names=list(label_encoder.classes_),
-            model_name=MODEL_NAME,
-            epochs=EPOCHS,
-            batch_size=BATCH_SIZE,
-            lr=LEARNING_RATE,
-            warmup_steps=WARMUP_STEPS,
-            max_pairs_per_class=MAX_PAIRS_PER_CLASS,
-            max_seq_length=MAX_SEQ_LENGTH,
-            seed=SEED,
-            dense_dim=DENSE_DIM,
-            # Loss function settings
-            loss_type=LOSS_TYPE,
-            loss_margin=LOSS_MARGIN,
-            # Hard negative mining settings
-            use_hard_negatives=USE_HARD_NEGATIVES,
-            num_hard_negatives=NUM_HARD_NEGATIVES,
-            hn_base_model=HN_BASE_MODEL,
-            # OOF CSV metadata (label, file, description + embeddings)
-            files=dataset["file"].tolist() if "file" in dataset.columns else None,
-            descriptions=dataset["code_summary"].tolist(),
-            freeze_base_model=freeze_base,
-            # LoRA / PEFT settings
-            use_lora=use_lora,
-            lora_r=LORA_R,
-            lora_alpha=LORA_ALPHA,
-            lora_dropout=LORA_DROPOUT,
-            lora_target_modules=LORA_TARGET_MODULES,
-        )
+        # Run 5-fold CV evaluation if enabled
+        if RUN_5FOLD_CV:
+            run_5fold_cv(
+                texts=dataset["code_summary"],
+                labels=dataset["label_enc"],
+                class_names=list(label_encoder.classes_),
+                model_name=MODEL_NAME,
+                epochs=EPOCHS,
+                batch_size=BATCH_SIZE,
+                lr=LEARNING_RATE,
+                warmup_steps=WARMUP_STEPS,
+                max_pairs_per_class=MAX_PAIRS_PER_CLASS,
+                max_seq_length=MAX_SEQ_LENGTH,
+                seed=SEED,
+                dense_dim=DENSE_DIM,
+                # Loss function settings
+                loss_type=LOSS_TYPE,
+                loss_margin=LOSS_MARGIN,
+                # Hard negative mining settings
+                use_hard_negatives=USE_HARD_NEGATIVES,
+                num_hard_negatives=NUM_HARD_NEGATIVES,
+                hn_base_model=HN_BASE_MODEL,
+                # OOF CSV metadata (label, file, description + embeddings)
+                files=dataset["file"].tolist() if "file" in dataset.columns else None,
+                descriptions=dataset["code_summary"].tolist(),
+                freeze_base_model=freeze_base,
+                # LoRA / PEFT settings
+                use_lora=use_lora,
+                lora_r=LORA_R,
+                lora_alpha=LORA_ALPHA,
+                lora_dropout=LORA_DROPOUT,
+                lora_target_modules=LORA_TARGET_MODULES,
+            )
+        else:
+            print("Skipping 5-fold CV (RUN_5FOLD_CV=False).")
 
-    # Optional: train on full dataset and save/push model
-    if RUN_FULL_DATASET_TRAINING and not RUN_WITHOUT_FINETUNING:
-        saved_path = train_full_dataset_and_push_to_hub(
-            texts=dataset["code_summary"],
-            labels=dataset["label_enc"],
-            model_name=MODEL_NAME,
-            max_seq_length=MAX_SEQ_LENGTH,
-            batch_size=BATCH_SIZE,
-            epochs=EPOCHS,
-            lr=LEARNING_RATE,
-            warmup_steps=WARMUP_STEPS,
-            max_pairs_per_class=MAX_PAIRS_PER_CLASS,
-            seed=SEED,
-            dense_dim=DENSE_DIM,
-            loss_type=LOSS_TYPE,
-            loss_margin=LOSS_MARGIN,
-            use_hard_negatives=USE_HARD_NEGATIVES,
-            num_hard_negatives=NUM_HARD_NEGATIVES,
-            hn_base_model=HN_BASE_MODEL,
-            hub_model_id=HUB_MODEL_ID if PUSH_TO_HUB else None,
-            push_to_hub=PUSH_TO_HUB,
-            hf_token=HF_TOKEN or None,
-            save_local=SAVE_MODEL_LOCALLY,
-            local_save_dir=LOCAL_MODEL_DIR,
-            freeze_base_model=FREEZE_BASE_MODEL,
-        )
-        print(f"\nModel saved at: {saved_path}")
-        if SAVE_MODEL_LOCALLY and not PUSH_TO_HUB:
-            print(f"\nTo upload later, run:")
-            print(f"  python upload_model.py --model_path {saved_path} --hub_id {HUB_MODEL_ID}")
+        # Train on full dataset and save/push model
+        if RUN_FULL_DATASET_TRAINING:
+            saved_path = train_full_dataset_and_push_to_hub(
+                texts=dataset["code_summary"],
+                labels=dataset["label_enc"],
+                class_names=list(label_encoder.classes_),
+                model_name=MODEL_NAME,
+                max_seq_length=MAX_SEQ_LENGTH,
+                batch_size=BATCH_SIZE,
+                epochs=EPOCHS,
+                lr=LEARNING_RATE,
+                warmup_steps=WARMUP_STEPS,
+                max_pairs_per_class=MAX_PAIRS_PER_CLASS,
+                seed=SEED,
+                dense_dim=DENSE_DIM,
+                loss_type=LOSS_TYPE,
+                loss_margin=LOSS_MARGIN,
+                use_hard_negatives=USE_HARD_NEGATIVES,
+                num_hard_negatives=NUM_HARD_NEGATIVES,
+                hn_base_model=HN_BASE_MODEL,
+                hub_model_id=HUB_MODEL_ID if PUSH_TO_HUB else None,
+                push_to_hub=PUSH_TO_HUB,
+                hf_token=HF_TOKEN or None,
+                save_local=SAVE_MODEL_LOCALLY,
+                local_save_dir=LOCAL_MODEL_DIR,
+                freeze_base_model=freeze_base,
+                use_lora=use_lora,
+                lora_r=LORA_R,
+                lora_alpha=LORA_ALPHA,
+                lora_dropout=LORA_DROPOUT,
+                lora_target_modules=LORA_TARGET_MODULES,
+            )
+            print(f"\nModel saved at: {saved_path}")
+            if SAVE_MODEL_LOCALLY and not PUSH_TO_HUB:
+                print(f"\nTo upload later, run:")
+                print(f"  python upload_model.py --model_path {saved_path} --hub_id {HUB_MODEL_ID}")
 
 
 if __name__ == "__main__":
