@@ -14,7 +14,7 @@ from .data import LossType
 def _add_dense_head(
     model: SentenceTransformer,
     out_dim: int = 8,
-    activation: Optional[Type[torch.nn.Module]] = torch.nn.Tanh
+    activation: Optional[Type[torch.nn.Module]] = None
 ) -> SentenceTransformer:
     """
     Append a dense projection layer to the model.
@@ -27,15 +27,26 @@ def _add_dense_head(
     Returns:
         Model with dense head added.
     """
-    in_dim = model.get_sentence_embedding_dimension()
+    get_dim_fn = getattr(model, "get_embedding_dimension", None) or getattr(model, "get_sentence_embedding_dimension", None)
+    in_dim = get_dim_fn() if get_dim_fn else None
     if in_dim is None or in_dim == out_dim:
         return model
+    
+    act_fn = None
+    if activation is not None:
+        if activation is torch.nn.Linear or activation is torch.nn.Identity:
+            act_fn = torch.nn.Identity()
+        else:
+            try:
+                act_fn = activation()
+            except TypeError:
+                act_fn = torch.nn.Identity()
     
     dense = sbert_models.Dense(
         in_features=in_dim,
         out_features=out_dim,
         bias=True,
-        activation_function=activation() if activation else None,
+        activation_function=act_fn,
     )
     model.add_module("dense", dense)
     return model
@@ -272,7 +283,7 @@ def train_model(
             model.add_module("dense_head", dense_layer)
             print(f"  [Freeze Base] Added trainable Dense head layer ({in_dim} -> {out_dim}).")
     elif dense_dim and dense_dim > 0:
-        model = _add_dense_head(model, out_dim=dense_dim, activation=torch.nn.Linear)
+        model = _add_dense_head(model, out_dim=dense_dim, activation=torch.nn.Identity)
     
     # Use bfloat16 if available
     use_bf16 = torch.cuda.is_available()
