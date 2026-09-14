@@ -46,7 +46,7 @@ WARMUP_STEPS = 10
 MAX_PAIRS_PER_CLASS = 80
 MAX_SEQ_LENGTH = 768
 SEED = 42
-DENSE_DIM = 8
+DENSE_DIM = 0
 
 # Training Strategy Mode:
 # - "lora": Parameter-Efficient Fine-Tuning (PEFT) using LoRA adapters (Recommended)
@@ -80,7 +80,7 @@ HF_TOKEN = ""  # Optional; set or use `huggingface-cli login`
 
 def main():
     """Main entry point for training."""
-    dataset_path = "./data/feb-10-2026-community-descriptions-unique.csv"
+    dataset_path = "./data/labeled_verified_data.csv"
     # dataset_path = "./data/ms-patterns.csv"
     
     try:
