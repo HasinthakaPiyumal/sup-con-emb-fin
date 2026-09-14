@@ -12,3 +12,8 @@ wandb_runs_raw.json
 wandb_logs_and_tables/
 __pycache__/
 export_wandb_runs_and_tables.py
+confusion_matrix*
+*.pdf
+artifact/
+artifacts/
+
